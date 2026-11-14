@@ -1,3 +1,4 @@
+import base64
 from datetime import date, datetime
 import os
 import re
@@ -1245,9 +1246,139 @@ def mostrar_cuadro_copia_hc(
 
 
 # -----------------------------------------------------------------------------
+# LOGO FLOTANTE EN ESQUINA ("ÁNGEL - UIC EDITION") CON AMPLIACIÓN AL PULSAR
+# -----------------------------------------------------------------------------
+@st.cache_data
+def _cargar_angel_logo_b64() -> Optional[str]:
+    ruta_logo = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "angel_logo.jpg"
+    )
+    if os.path.exists(ruta_logo):
+        try:
+            with open(ruta_logo, "rb") as f:
+                return base64.b64encode(f.read()).decode("utf-8")
+        except Exception:
+            return None
+    return None
+
+
+def render_angel_corner_logo() -> None:
+    """
+    Muestra el logo de Ángel ('GTA VI - UIC Edition') fijo en la esquina inferior
+    derecha de la pantalla. Al pulsarlo se amplía a tamaño completo en un modal.
+    """
+    b64_img = _cargar_angel_logo_b64()
+    if not b64_img:
+        return
+
+    html_logo = f"""
+    <style>
+    #angel-modal-toggle {{
+        display: none;
+    }}
+    .angel-corner-badge {{
+        position: fixed;
+        bottom: 20px;
+        right: 20px;
+        z-index: 999990;
+        cursor: pointer;
+        background: linear-gradient(135deg, #ff6ec4 0%, #7873f5 100%);
+        padding: 4px;
+        border-radius: 16px;
+        box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+        transition: transform 0.2s ease, box-shadow 0.2s ease;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding-right: 12px;
+        user-select: none;
+    }}
+    .angel-corner-badge:hover {{
+        transform: scale(1.07);
+        box-shadow: 0 8px 26px rgba(255, 110, 196, 0.6);
+    }}
+    .angel-corner-badge img {{
+        width: 58px;
+        height: 72px;
+        object-fit: cover;
+        border-radius: 12px;
+        border: 2px solid #ffffff;
+        display: block;
+    }}
+    .angel-corner-text {{
+        color: #ffffff;
+        font-family: sans-serif;
+        font-size: 12px;
+        font-weight: 700;
+        line-height: 1.25;
+        text-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+    }}
+    .angel-corner-sub {{
+        display: block;
+        font-size: 10px;
+        font-weight: 400;
+        opacity: 0.92;
+    }}
+    .angel-lightbox-overlay {{
+        display: none;
+        position: fixed;
+        inset: 0;
+        z-index: 999999;
+        background: rgba(0, 0, 0, 0.85);
+        backdrop-filter: blur(5px);
+        align-items: center;
+        justify-content: center;
+        flex-direction: column;
+        padding: 20px;
+        cursor: zoom-out;
+    }}
+    #angel-modal-toggle:checked ~ .angel-lightbox-overlay {{
+        display: flex;
+    }}
+    .angel-lightbox-overlay img {{
+        max-height: 86vh;
+        max-width: 92vw;
+        border-radius: 16px;
+        border: 3px solid #ff6ec4;
+        box-shadow: 0 15px 50px rgba(0, 0, 0, 0.8);
+    }}
+    .angel-lightbox-close {{
+        margin-top: 12px;
+        background: #ffffff;
+        color: #111111;
+        padding: 6px 18px;
+        border-radius: 999px;
+        font-family: sans-serif;
+        font-size: 13px;
+        font-weight: 700;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+    }}
+    </style>
+
+    <input type="checkbox" id="angel-modal-toggle" />
+
+    <label for="angel-modal-toggle" class="angel-corner-badge" title="Pulsar para ampliar logo UIC Edition">
+        <img src="data:image/jpeg;base64,{b64_img}" alt="Ángel UIC Edition" />
+        <div class="angel-corner-text">
+            🕶️ Ángel UIC<br/>
+            <span class="angel-corner-sub">🔍 Pulsar para ampliar</span>
+        </div>
+    </label>
+
+    <label for="angel-modal-toggle" class="angel-lightbox-overlay">
+        <img src="data:image/jpeg;base64,{b64_img}" alt="Ángel GTA VI UIC Edition Ampliado" />
+        <div class="angel-lightbox-close">✕ Pulsar en cualquier lugar para cerrar</div>
+    </label>
+    """
+    st.markdown(html_logo, unsafe_allow_html=True)
+
+
+# -----------------------------------------------------------------------------
 # INTERFAZ PRINCIPAL
 # -----------------------------------------------------------------------------
 def main() -> None:
+    render_angel_corner_logo()
+
     if not check_password():
         return
 
