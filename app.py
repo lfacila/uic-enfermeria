@@ -910,10 +910,19 @@ def cargar_estado_paciente(
     st.session_state["trat_cardio_edit"] = trat_cardio_prev
     st.session_state["trat_nocardio_edit"] = trat_nocardio_prev
     st.session_state["talla_editable_cm"] = float(paciente.get("talla_cm") or 165.0)
+    st.session_state["borrador_analitica"] = None
     st.session_state["texto_pre_consulta"] = None
     st.session_state["texto_post_consulta"] = None
     st.session_state["texto_analitica_hc"] = None
     st.session_state["texto_tratamiento_hc"] = None
+
+
+def limpiar_paciente_actual() -> None:
+    """Limpia el paciente activo en pantalla para poder buscar o dar de alta otro paciente."""
+    claves_conservar = {"authenticated"}
+    for k in list(st.session_state.keys()):
+        if k not in claves_conservar:
+            del st.session_state[k]
 
 
 # -----------------------------------------------------------------------------
@@ -1160,7 +1169,7 @@ def main() -> None:
     # =========================================================================
     st.subheader("Identificación del Paciente")
 
-    col_nhc, col_btn = st.columns([3, 1])
+    col_nhc, col_btn, col_nuevo_pac = st.columns([3, 1.2, 1.5])
     with col_nhc:
         nhc_input = st.text_input(
             "Número de Historia Clínica (NHC)",
@@ -1173,6 +1182,16 @@ def main() -> None:
         buscar_clicked = st.button(
             "🔍 Buscar / Iniciar", type="primary", use_container_width=True
         )
+    with col_nuevo_pac:
+        st.write("")
+        st.write("")
+        if st.button(
+            "🔄 Cambiar / Otro Paciente",
+            use_container_width=True,
+            help="Limpia la ficha actual en pantalla para introducir el NHC de otro paciente",
+        ):
+            limpiar_paciente_actual()
+            st.rerun()
 
     if buscar_clicked:
         nhc_limpio = nhc_input.strip()
@@ -1910,6 +1929,13 @@ def main() -> None:
                     texto_plano=st.session_state["texto_pre_consulta"],
                     key_prefix="consulta_hc",
                 )
+                if st.button(
+                    "👤 Finalizar con este paciente y pasar al siguiente",
+                    key="btn_fin_pac_tab1",
+                    use_container_width=True,
+                ):
+                    limpiar_paciente_actual()
+                    st.rerun()
 
             # Desplegable opcional para actualizar una visita previa tras consulta médica
             if visitas_paciente:
@@ -2055,7 +2081,7 @@ def main() -> None:
                         st.rerun()
 
     # =========================================================================
-    # PESTAÑA 2: ANALÍTICA (EXTRACTOR AUTOMÁTICO HGUV + COMPARATIVA)
+    # PESTAÑA 2: ANALÍTICA (PASO 1: EXTRAER Y REVISAR -> PASO 2: GRABAR EN BD)
     # =========================================================================
     with tab_analitica:
         if not paciente_actual:
@@ -2064,12 +2090,12 @@ def main() -> None:
             )
         else:
             st.subheader(
-                "🧪 Extractor Automático de Analítica (Formato HGUV) y Comparativa"
+                "🧪 Extractor Automático de Analítica (Formato HGUV) en 2 Pasos"
             )
             st.caption(
-                "Pegue el texto copiado del informe de laboratorio del HGUV. Se extraerán automáticamente "
-                "**Hb, Hto, Plaquetas, ProBNP, CA 125, Cr, FGE, Urea, K, Na, GPT, INR, PCR y TpI (si existe)** "
-                "y se compararán con la última analítica guardada."
+                "**Paso 1:** Pegue el texto del informe de laboratorio del HGUV y pulse **Extraer Datos**. "
+                "Podrá revisar y corregir cualquier cifra en pantalla antes de guardarla.  \n"
+                "**Paso 2:** Una vez comprobado que todo es correcto, pulse **Confirmar y Grabar Analítica en Base de Datos**."
             )
 
             analiticas_previas: List[Dict[str, Any]] = st.session_state.get(
@@ -2086,130 +2112,176 @@ def main() -> None:
                 key="input_raw_analitica",
             )
 
-            datos_extraidos = parsear_analitica_hguv(texto_analitica_input)
+            col_ext_btn, col_limp_btn = st.columns([3, 1])
+            with col_ext_btn:
+                extraer_clicked = st.button(
+                    "🔍 Paso 1: Extraer Datos de la Analítica (Para Revisar antes de Grabar)",
+                    type="primary",
+                    use_container_width=True,
+                )
+            with col_limp_btn:
+                if st.button(
+                    "🧹 Limpiar borrador de analítica", use_container_width=True
+                ):
+                    st.session_state["borrador_analitica"] = None
+                    st.session_state["texto_analitica_hc"] = None
+                    st.rerun()
 
-            st.markdown("##### Valores extraídos (puede revisarlos o completarlos antes de guardar)")
-            fecha_ana_col, _ = st.columns([1, 3])
-            with fecha_ana_col:
-                fecha_analitica_val = st.date_input(
-                    "Fecha de la analítica",
-                    value=datos_extraidos.get("fecha_analitica", date.today()),
-                    key="fecha_ana_input",
+            if extraer_clicked:
+                if not texto_analitica_input.strip():
+                    st.warning(
+                        "Pegue primero el texto de la analítica en el cuadro superior (o rellene manualmente tras pulsar)."
+                    )
+                datos_ext = parsear_analitica_hguv(texto_analitica_input)
+                st.session_state["borrador_analitica"] = datos_ext
+                st.session_state["borrador_analitica_id"] = (
+                    st.session_state.get("borrador_analitica_id", 0) + 1
+                )
+                st.session_state["texto_analitica_hc"] = None
+
+            borrador_actual = st.session_state.get("borrador_analitica")
+            borrador_id = st.session_state.get("borrador_analitica_id", 1)
+
+            if borrador_actual is not None:
+                st.info(
+                    "🔎 **Paso 1 completado (Borrador en revisión):** Revise los valores extraídos abajo. "
+                    "**Todavía NO se ha grabado en la base de datos** hasta que pulse el botón del **Paso 2**."
                 )
 
-            # Mostrar los 14 parámetros en una cuadrícula limpia (None si no está presente)
-            valores_editados: Dict[str, Any] = {
-                "fecha_analitica": fecha_analitica_val.isoformat(),
-                "fge_texto": datos_extraidos.get("fge_texto"),
-            }
-
-            cols_ana = st.columns(4)
-            for idx, (clave, etiqueta, unidad) in enumerate(PARAMETROS_ANALITICA_META):
-                col = cols_ana[idx % 4]
-                val_detectado = datos_extraidos.get(clave)
-                val_str_default = (
-                    f"{val_detectado:g}" if val_detectado is not None else ""
-                )
-                with col:
-                    label_input = f"{etiqueta} ({unidad})" if unidad else etiqueta
-                    entrada_txt = st.text_input(
-                        label_input,
-                        value=val_str_default,
-                        placeholder="No solicitado / vacío",
-                        key=f"ana_field_{clave}_{hash(texto_analitica_input)}",
-                    )
-                    if clave == "fge" and entrada_txt.strip().startswith((">", "<")):
-                        valores_editados["fge_texto"] = entrada_txt.strip()
-                    valores_editados[clave] = _to_float(entrada_txt)
-
-            # Vista previa en vivo de la comparativa con la última analítica
-            if ultima_analitica:
-                st.markdown(
-                    f"##### 📊 Comparativa automática con la última analítica guardada ({str(ultima_analitica.get('fecha_analitica'))[:10]})"
-                )
-                filas_comp = []
-                for clave, etiqueta, unidad in PARAMETROS_ANALITICA_META:
-                    v_act = valores_editados.get(clave)
-                    v_prev = ultima_analitica.get(clave)
-                    if v_act is None and v_prev is None:
-                        continue
-                    diff_str = "-"
-                    if v_act is not None and v_prev is not None:
-                        try:
-                            d = round(float(v_act) - float(v_prev), 2)
-                            flecha = "🔺" if d > 0 else ("🔻" if d < 0 else "＝")
-                            signo = "+" if d > 0 else ""
-                            diff_str = f"{flecha} {signo}{d:g}"
-                        except (TypeError, ValueError):
-                            diff_str = "-"
-                    filas_comp.append(
-                        {
-                            "Parámetro": f"{etiqueta} ({unidad})"
-                            if unidad
-                            else etiqueta,
-                            f"Actual ({fecha_analitica_val.isoformat()})": (
-                                valores_editados.get("fge_texto")
-                                if (
-                                    clave == "fge"
-                                    and valores_editados.get("fge_texto")
-                                )
-                                else (f"{v_act:g}" if v_act is not None else "—")
-                            ),
-                            f"Previa ({str(ultima_analitica.get('fecha_analitica'))[:10]})": (
-                                f"{float(v_prev):g}" if v_prev is not None else "—"
-                            ),
-                            "Diferencia (Δ)": diff_str,
-                        }
-                    )
-                if filas_comp:
-                    st.dataframe(
-                        pd.DataFrame(filas_comp),
-                        use_container_width=True,
-                        hide_index=True,
+                fecha_ana_col, _ = st.columns([1, 3])
+                with fecha_ana_col:
+                    fecha_analitica_val = st.date_input(
+                        "Fecha de la analítica",
+                        value=borrador_actual.get("fecha_analitica", date.today()),
+                        key=f"fecha_ana_input_{borrador_id}",
                     )
 
-            if st.button(
-                "💾 Guardar Analítica en Supabase y Generar Texto Comparativo para HC",
-                type="primary",
-                use_container_width=True,
-            ):
-                try:
-                    payload_ana = {
-                        "paciente_id": paciente_actual["id"],
-                        "fecha_analitica": fecha_analitica_val.isoformat(),
-                        "hb": valores_editados.get("hb"),
-                        "hto": valores_editados.get("hto"),
-                        "plaquetas": valores_editados.get("plaquetas"),
-                        "probnp": valores_editados.get("probnp"),
-                        "ca125": valores_editados.get("ca125"),
-                        "cr": valores_editados.get("cr"),
-                        "fge": valores_editados.get("fge"),
-                        "fge_texto": valores_editados.get("fge_texto"),
-                        "urea": valores_editados.get("urea"),
-                        "k": valores_editados.get("k"),
-                        "na": valores_editados.get("na"),
-                        "gpt": valores_editados.get("gpt"),
-                        "inr": valores_editados.get("inr"),
-                        "pcr": valores_editados.get("pcr"),
-                        "tpi": valores_editados.get("tpi"),
-                        "texto_bruto": texto_analitica_input.strip() or None,
-                    }
+                valores_editados: Dict[str, Any] = {
+                    "fecha_analitica": fecha_analitica_val.isoformat(),
+                    "fge_texto": borrador_actual.get("fge_texto"),
+                }
 
-                    supabase.table("analiticas_uic").insert(payload_ana).execute()
-
-                    st.session_state["texto_analitica_hc"] = (
-                        generar_texto_comparativo_analitica(
-                            paciente=paciente_actual,
-                            analitica_actual=payload_ana,
-                            analitica_previa=ultima_analitica,
+                cols_ana = st.columns(4)
+                for idx, (clave, etiqueta, unidad) in enumerate(
+                    PARAMETROS_ANALITICA_META
+                ):
+                    col = cols_ana[idx % 4]
+                    val_detectado = borrador_actual.get(clave)
+                    val_str_default = (
+                        f"{val_detectado:g}" if val_detectado is not None else ""
+                    )
+                    with col:
+                        label_input = (
+                            f"{etiqueta} ({unidad})" if unidad else etiqueta
                         )
+                        entrada_txt = st.text_input(
+                            label_input,
+                            value=val_str_default,
+                            placeholder="No solicitado / vacío",
+                            key=f"ana_field_{clave}_{borrador_id}",
+                        )
+                        if clave == "fge" and entrada_txt.strip().startswith(
+                            (">", "<")
+                        ):
+                            valores_editados["fge_texto"] = entrada_txt.strip()
+                        valores_editados[clave] = _to_float(entrada_txt)
+
+                # Vista previa en vivo de la comparativa con la última analítica
+                if ultima_analitica:
+                    st.markdown(
+                        f"##### 📊 Vista previa comparativa con la última analítica guardada ({str(ultima_analitica.get('fecha_analitica'))[:10]})"
                     )
-                    st.session_state["analiticas_paciente"] = (
-                        obtener_analiticas_paciente(supabase, paciente_actual["id"])
-                    )
-                    st.success("✅ Analítica guardada y comparada correctamente.")
-                except Exception as exc:
-                    st.error(f"Error al guardar la analítica: {exc}")
+                    filas_comp = []
+                    for clave, etiqueta, unidad in PARAMETROS_ANALITICA_META:
+                        v_act = valores_editados.get(clave)
+                        v_prev = ultima_analitica.get(clave)
+                        if v_act is None and v_prev is None:
+                            continue
+                        diff_str = "-"
+                        if v_act is not None and v_prev is not None:
+                            try:
+                                d = round(float(v_act) - float(v_prev), 2)
+                                flecha = "🔺" if d > 0 else ("🔻" if d < 0 else "＝")
+                                signo = "+" if d > 0 else ""
+                                diff_str = f"{flecha} {signo}{d:g}"
+                            except (TypeError, ValueError):
+                                diff_str = "-"
+                        filas_comp.append(
+                            {
+                                "Parámetro": f"{etiqueta} ({unidad})"
+                                if unidad
+                                else etiqueta,
+                                f"Actual ({fecha_analitica_val.isoformat()})": (
+                                    valores_editados.get("fge_texto")
+                                    if (
+                                        clave == "fge"
+                                        and valores_editados.get("fge_texto")
+                                    )
+                                    else (f"{v_act:g}" if v_act is not None else "—")
+                                ),
+                                f"Previa ({str(ultima_analitica.get('fecha_analitica'))[:10]})": (
+                                    f"{float(v_prev):g}"
+                                    if v_prev is not None
+                                    else "—"
+                                ),
+                                "Diferencia (Δ)": diff_str,
+                            }
+                        )
+                    if filas_comp:
+                        st.dataframe(
+                            pd.DataFrame(filas_comp),
+                            use_container_width=True,
+                            hide_index=True,
+                        )
+
+                st.write("")
+                if st.button(
+                    "💾 Paso 2: Confirmar y Grabar Analítica en Base de Datos y Generar Texto HC",
+                    type="primary",
+                    use_container_width=True,
+                ):
+                    try:
+                        payload_ana = {
+                            "paciente_id": paciente_actual["id"],
+                            "fecha_analitica": fecha_analitica_val.isoformat(),
+                            "hb": valores_editados.get("hb"),
+                            "hto": valores_editados.get("hto"),
+                            "plaquetas": valores_editados.get("plaquetas"),
+                            "probnp": valores_editados.get("probnp"),
+                            "ca125": valores_editados.get("ca125"),
+                            "cr": valores_editados.get("cr"),
+                            "fge": valores_editados.get("fge"),
+                            "fge_texto": valores_editados.get("fge_texto"),
+                            "urea": valores_editados.get("urea"),
+                            "k": valores_editados.get("k"),
+                            "na": valores_editados.get("na"),
+                            "gpt": valores_editados.get("gpt"),
+                            "inr": valores_editados.get("inr"),
+                            "pcr": valores_editados.get("pcr"),
+                            "tpi": valores_editados.get("tpi"),
+                            "texto_bruto": texto_analitica_input.strip() or None,
+                        }
+
+                        supabase.table("analiticas_uic").insert(payload_ana).execute()
+
+                        st.session_state["texto_analitica_hc"] = (
+                            generar_texto_comparativo_analitica(
+                                paciente=paciente_actual,
+                                analitica_actual=payload_ana,
+                                analitica_previa=ultima_analitica,
+                            )
+                        )
+                        st.session_state["analiticas_paciente"] = (
+                            obtener_analiticas_paciente(
+                                supabase, paciente_actual["id"]
+                            )
+                        )
+                        st.session_state["borrador_analitica"] = None
+                        st.success(
+                            "✅ ¡Analítica confirmada y grabada correctamente en Supabase!"
+                        )
+                    except Exception as exc:
+                        st.error(f"Error al guardar la analítica: {exc}")
 
             if st.session_state.get("texto_analitica_hc"):
                 st.markdown("---")
