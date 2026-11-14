@@ -991,15 +991,75 @@ def construir_lineas_actuaciones_enfermeria(datos: Dict[str, Any]) -> List[str]:
     return actuaciones
 
 
+def construir_linea_analitica_para_consulta(
+    analiticas_paciente: Optional[List[Dict[str, Any]]] = None,
+) -> Optional[str]:
+    """
+    Si el paciente tiene analíticas subidas, construye la línea de resultados
+    analíticos (con comparativa respecto a la previa si existe) para incluirla
+    en el texto plano general de la Historia Clínica. Si no hay analíticas, devuelve None.
+    """
+    if not analiticas_paciente:
+        return None
+
+    actual = analiticas_paciente[0]
+    previa = analiticas_paciente[1] if len(analiticas_paciente) >= 2 else None
+    fecha_act = str(actual.get("fecha_analitica", ""))[:10]
+    fecha_prev = str(previa.get("fecha_analitica", ""))[:10] if previa else None
+
+    items: List[str] = []
+    for clave, etiqueta, unidad in PARAMETROS_ANALITICA_META:
+        val_act = actual.get(clave)
+        if val_act is None:
+            continue
+
+        if clave == "fge" and actual.get("fge_texto"):
+            val_str = f"{actual['fge_texto']}"
+        else:
+            val_num = float(val_act)
+            val_str = f"{int(val_num)}" if val_num.is_integer() else f"{val_num:g}"
+
+        unid_str = f" {unidad}" if unidad else ""
+        comp_str = ""
+        if previa and previa.get(clave) is not None:
+            try:
+                prev_num = float(previa[clave])
+                act_num = float(val_act)
+                diff = round(act_num - prev_num, 2)
+                prev_fmt = (
+                    f"{int(prev_num)}" if prev_num.is_integer() else f"{prev_num:g}"
+                )
+                if diff > 0:
+                    comp_str = f" (previo {prev_fmt}; +{diff:g})"
+                elif diff < 0:
+                    comp_str = f" (previo {prev_fmt}; {diff:g})"
+                else:
+                    comp_str = f" (previo {prev_fmt}; =)"
+            except (TypeError, ValueError):
+                pass
+
+        items.append(f"{etiqueta}: {val_str}{unid_str}{comp_str}")
+
+    if not items:
+        return None
+
+    cabecera = f"Analítica ({fecha_act})"
+    if fecha_prev:
+        cabecera += f" [comparada con {fecha_prev}]"
+    return f"- {cabecera}: " + " | ".join(items)
+
+
 def generar_texto_consulta_enfermeria(
     paciente: Dict[str, Any],
     datos_visita: Dict[str, Any],
     talla_cm: float,
     resumen_incidencias_str: str,
+    analiticas_paciente: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
     """
     Genera el texto plano completo de la consulta de enfermería para copiar y pegar
-    en la Historia Clínica (HC). Si no hay glucemia domiciliaria, la omite por completo.
+    en la Historia Clínica (HC), incluyendo los resultados analíticos subidos (si los hay).
+    Si no hay glucemia domiciliaria ni analítica, los omite sin dejar líneas vacías.
     """
     fecha_str = str(datos_visita.get("fecha_visita", date.today().isoformat()))[:10]
     nhc = paciente.get("nhc", "-")
@@ -1073,7 +1133,10 @@ def generar_texto_consulta_enfermeria(
         else "Valoración clínica y educación sanitaria."
     )
 
-    # 4. Adherencia y tratamiento
+    # 4. Resultados analíticos (si se han subido para este paciente)
+    linea_analitica = construir_linea_analitica_para_consulta(analiticas_paciente)
+
+    # 5. Adherencia y tratamiento
     cumplimiento_str = (
         "Buen cumplimiento terapéutico"
         if datos_visita.get("buen_cumplimiento")
@@ -1099,10 +1162,17 @@ def generar_texto_consulta_enfermeria(
         f"- Antropometría en Consulta: Peso actual {peso:.1f} kg ({dif_str}) | Talla: {talla_cm:g} cm | IMC: {imc:.2f} kg/m2",
         f"- Constantes en Consulta: TA {tas_con}/{tad_con} mmHg | FC {fc_con} lpm",
         f"- Actuaciones / Técnicas de Enfermería: {texto_actuaciones}",
-        f"- Adherencia Terapéutica: {cumplimiento_str}.",
-        "- Tratamiento Actual:",
-        f"{med_habitual}",
     ]
+    if linea_analitica:
+        lineas.append(linea_analitica)
+
+    lineas.extend(
+        [
+            f"- Adherencia Terapéutica: {cumplimiento_str}.",
+            "- Tratamiento Actual:",
+            f"{med_habitual}",
+        ]
+    )
     if notas_post:
         lineas.extend(["", f"- Observaciones / Notas de Enfermería:\n{notas_post}"])
 
@@ -1916,6 +1986,9 @@ def main() -> None:
                             datos_visita=payload_visita,
                             talla_cm=talla_actual_cm,
                             resumen_incidencias_str=resumen_incidencias_str,
+                            analiticas_paciente=st.session_state.get(
+                                "analiticas_paciente"
+                            ),
                         )
                     )
                     st.success("✅ Consulta guardada correctamente en Supabase.")
@@ -2075,6 +2148,9 @@ def main() -> None:
                                     "detalle_incidencias"
                                 )
                                 or "Sin incidencias registradas.",
+                                analiticas_paciente=st.session_state.get(
+                                    "analiticas_paciente"
+                                ),
                             )
                         )
                         st.success("Visita actualizada y texto regenerado.")
@@ -2276,9 +2352,28 @@ def main() -> None:
                                 supabase, paciente_actual["id"]
                             )
                         )
+                        # Si ya hay una visita guardada del paciente, actualizar también
+                        # el texto general de la consulta para que incluya esta nueva analítica
+                        visitas_act = st.session_state.get("visitas_paciente", [])
+                        if visitas_act:
+                            v0 = visitas_act[0]
+                            st.session_state["texto_pre_consulta"] = (
+                                generar_texto_consulta_enfermeria(
+                                    paciente=paciente_actual,
+                                    datos_visita=v0,
+                                    talla_cm=talla_actual_cm,
+                                    resumen_incidencias_str=v0.get(
+                                        "detalle_incidencias"
+                                    )
+                                    or "Sin incidencias clínicas (cardiológicas ni no cardiológicas) desde la última visita.",
+                                    analiticas_paciente=st.session_state[
+                                        "analiticas_paciente"
+                                    ],
+                                )
+                            )
                         st.session_state["borrador_analitica"] = None
                         st.success(
-                            "✅ ¡Analítica confirmada y grabada correctamente en Supabase!"
+                            "✅ ¡Analítica confirmada, grabada en Supabase e incorporada al texto general de la consulta para la HC!"
                         )
                     except Exception as exc:
                         st.error(f"Error al guardar la analítica: {exc}")
