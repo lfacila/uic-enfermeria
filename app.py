@@ -1161,7 +1161,10 @@ def generar_texto_consulta_enfermeria(
     # 4. Resultados analíticos (si se han subido para este paciente)
     linea_analitica = construir_linea_analitica_para_consulta(analiticas_paciente)
 
-    # 5. Adherencia y tratamiento
+    # 5. Entorno Social, Soporte UHD, Ejercicio y Hábitos
+    resumen_social = (datos_visita.get("resumen_social_habitos") or "").strip()
+
+    # 6. Adherencia y tratamiento
     cumplimiento_str = (
         "Buen cumplimiento terapéutico"
         if datos_visita.get("buen_cumplimiento")
@@ -1190,6 +1193,8 @@ def generar_texto_consulta_enfermeria(
     ]
     if linea_analitica:
         lineas.append(linea_analitica)
+    if resumen_social:
+        lineas.append(f"- Entorno Social, UHD y Estilo de Vida: {resumen_social}")
 
     lineas.extend(
         [
@@ -1857,9 +1862,219 @@ def main() -> None:
 
             st.markdown("---")
             # -----------------------------------------------------------------
-            # BLOQUE E: ADHERENCIA, MEDICACIÓN Y NOTAS
+            # BLOQUE E: VARIABLES SOCIALES, SOPORTE UHD, EJERCICIO Y HÁBITOS (1 CLIC)
             # -----------------------------------------------------------------
-            st.markdown("#### 5. Tratamiento Habitual, Adherencia y Observaciones")
+            st.markdown(
+                "#### 5. Entorno Social, Soporte UHD, Ejercicio Físico y Hábitos *(Selección rápida — se precarga de la visita previa)*"
+            )
+
+            col_soc1, col_soc2, col_soc3 = st.columns(3)
+
+            with col_soc1:
+                st.markdown("##### 🏠 Convivencia y Soporte UHD")
+                vive_solo_prev = (
+                    bool(ultima_visita.get("vive_solo"))
+                    if (ultima_visita and ultima_visita.get("vive_solo") is not None)
+                    else False
+                )
+                vive_solo_sel = st.radio(
+                    "¿Vive solo/a?",
+                    options=["No", "Sí"],
+                    index=1 if vive_solo_prev else 0,
+                    horizontal=True,
+                )
+                vive_solo_bool = vive_solo_sel == "Sí"
+
+                ops_convive = [
+                    "Esposa/o o Pareja",
+                    "Hijo/a",
+                    "Esposa/o e hijos",
+                    "Otros familiares",
+                    "Cuidador/a formal",
+                    "Residencia",
+                ]
+                if not vive_solo_bool:
+                    conv_prev = (
+                        ultima_visita.get("convive_con") if ultima_visita else None
+                    )
+                    idx_conv = (
+                        ops_convive.index(conv_prev)
+                        if conv_prev in ops_convive
+                        else 0
+                    )
+                    convive_con = st.selectbox(
+                        "¿Con quién vive?", options=ops_convive, index=idx_conv
+                    )
+                else:
+                    convive_con = "Vive solo/a"
+
+                ops_acomp = [
+                    "Sí (Esposa/o o Pareja)",
+                    "Sí (Hijo/a)",
+                    "Sí (Otro familiar / Cuidador)",
+                    "No (Viene solo/a)",
+                ]
+                acomp_prev = (
+                    ultima_visita.get("viene_acompanado") if ultima_visita else None
+                )
+                idx_acomp = (
+                    ops_acomp.index(acomp_prev) if acomp_prev in ops_acomp else 0
+                )
+                viene_acompanado = st.selectbox(
+                    "¿Viene acompañado/a a consulta?",
+                    options=ops_acomp,
+                    index=idx_acomp,
+                )
+
+                uhd_prev = (
+                    bool(ultima_visita.get("soporte_24h_uhd"))
+                    if (
+                        ultima_visita
+                        and ultima_visita.get("soporte_24h_uhd") is not None
+                    )
+                    else (not vive_solo_bool)
+                )
+                soporte_24h_uhd = st.checkbox(
+                    "🚑 Vive con alguien 24h que pueda ayudarle (Apto UHD)",
+                    value=uhd_prev,
+                )
+
+            with col_soc2:
+                st.markdown("##### 🏃 Situación Laboral y Ejercicio Físico")
+                ops_lab = [
+                    "Jubilado/a",
+                    "Pensionista",
+                    "Activo/a",
+                    "Tareas del hogar / Otros",
+                ]
+                lab_prev = (
+                    ultima_visita.get("situacion_laboral") if ultima_visita else None
+                )
+                idx_lab = ops_lab.index(lab_prev) if lab_prev in ops_lab else 0
+                situacion_laboral = st.selectbox(
+                    "Situación laboral", options=ops_lab, index=idx_lab
+                )
+
+                ops_ej = [
+                    "Camina",
+                    "Gimnasio / Rehabilitación",
+                    "Nada (Sedentario)",
+                    "Otros (bicicleta, natación...)",
+                ]
+                ej_prev = ultima_visita.get("tipo_ejercicio") if ultima_visita else None
+                idx_ej = ops_ej.index(ej_prev) if ej_prev in ops_ej else 0
+                tipo_ejercicio = st.selectbox(
+                    "Ejercicio físico habitual", options=ops_ej, index=idx_ej
+                )
+
+                ejercicio_duracion: Optional[str] = None
+                ejercicio_frecuencia: Optional[str] = None
+                if tipo_ejercicio != "Nada (Sedentario)":
+                    ops_dur = ["< 15 min", "15 - 30 min", "30 - 60 min", "> 60 min"]
+                    dur_prev = (
+                        ultima_visita.get("ejercicio_duracion")
+                        if ultima_visita
+                        else None
+                    )
+                    idx_dur = ops_dur.index(dur_prev) if dur_prev in ops_dur else 2
+
+                    ops_frec = [
+                        "1 - 2 veces/semana",
+                        "3 - 4 veces/semana",
+                        "5 - 6 veces/semana",
+                        "Diario (7 días/semana)",
+                    ]
+                    frec_prev = (
+                        ultima_visita.get("ejercicio_frecuencia")
+                        if ultima_visita
+                        else None
+                    )
+                    idx_frec = ops_frec.index(frec_prev) if frec_prev in ops_frec else 2
+
+                    c_ej1, c_ej2 = st.columns(2)
+                    with c_ej1:
+                        ejercicio_duracion = st.selectbox(
+                            "¿Cuánto tiempo?", options=ops_dur, index=idx_dur
+                        )
+                    with c_ej2:
+                        ejercicio_frecuencia = st.selectbox(
+                            "¿Cuántas veces/sem?", options=ops_frec, index=idx_frec
+                        )
+
+            with col_soc3:
+                st.markdown("##### 🧂 Autonomía, Movilidad y Hábitos")
+                ops_auto = [
+                    "Autónomo/a (medicación y peso)",
+                    "Supervisado por familiar/cuidador",
+                    "Dependiente de cuidador",
+                ]
+                auto_prev = (
+                    ultima_visita.get("autonomia_autocuidado")
+                    if ultima_visita
+                    else None
+                )
+                idx_auto = ops_auto.index(auto_prev) if auto_prev in ops_auto else 0
+                autonomia_autocuidado = st.selectbox(
+                    "Gestión de medicación y autocuidado",
+                    options=ops_auto,
+                    index=idx_auto,
+                )
+
+                ops_mov = [
+                    "Autónomo sin ayudas",
+                    "Bastón / Muleta",
+                    "Andador",
+                    "Silla de ruedas / Movilidad muy reducida",
+                ]
+                mov_prev = (
+                    ultima_visita.get("movilidad_basica") if ultima_visita else None
+                )
+                idx_mov = ops_mov.index(mov_prev) if mov_prev in ops_mov else 0
+                movilidad_basica = st.selectbox(
+                    "Movilidad básica", options=ops_mov, index=idx_mov
+                )
+
+                ops_dieta = [
+                    "Cumple dieta hiposódica",
+                    "Cumplimiento parcial",
+                    "No cumple / Transgresiones",
+                ]
+                dieta_prev = (
+                    ultima_visita.get("dieta_hiposodica") if ultima_visita else None
+                )
+                idx_dieta = (
+                    ops_dieta.index(dieta_prev) if dieta_prev in ops_dieta else 0
+                )
+                dieta_hiposodica = st.selectbox(
+                    "Dieta hiposódica y control hídrico",
+                    options=ops_dieta,
+                    index=idx_dieta,
+                )
+
+            # Construir línea de resumen social y hábitos para la HC
+            convivencia_txt = (
+                "Vive solo/a"
+                if vive_solo_bool
+                else f"Vive acompañado/a ({convive_con})"
+            )
+            uhd_txt = "Sí (Apto UHD)" if soporte_24h_uhd else "No"
+            if tipo_ejercicio == "Nada (Sedentario)":
+                ejercicio_txt = "Sedentario (no realiza ejercicio)"
+            else:
+                ejercicio_txt = f"{tipo_ejercicio} ({ejercicio_duracion}, {ejercicio_frecuencia})"
+
+            resumen_social_habitos = (
+                f"{convivencia_txt} | Soporte 24h para UHD: {uhd_txt} | "
+                f"Acude acompañado: {viene_acompanado} | Situación laboral: {situacion_laboral} | "
+                f"Actividad física: {ejercicio_txt} | Autocuidado: {autonomia_autocuidado} | "
+                f"Movilidad: {movilidad_basica} | Dieta: {dieta_hiposodica}."
+            )
+
+            st.markdown("---")
+            # -----------------------------------------------------------------
+            # BLOQUE F: ADHERENCIA, MEDICACIÓN Y NOTAS
+            # -----------------------------------------------------------------
+            st.markdown("#### 6. Tratamiento Habitual, Adherencia y Observaciones")
             medicacion_habitual = st.text_area(
                 "Medicación habitual (precargada de la visita anterior o de la Pestaña 3 de Abucasis/GAIA)",
                 key="pre_medicacion_habitual",
@@ -1995,6 +2210,18 @@ def main() -> None:
                 "buen_cumplimiento": bool(buen_cumplimiento),
                 "observaciones_cumplimiento": observaciones_cumplimiento.strip()
                 or None,
+                "vive_solo": bool(vive_solo_bool),
+                "convive_con": convive_con,
+                "viene_acompanado": viene_acompanado,
+                "soporte_24h_uhd": bool(soporte_24h_uhd),
+                "situacion_laboral": situacion_laboral,
+                "tipo_ejercicio": tipo_ejercicio,
+                "ejercicio_duracion": ejercicio_duracion,
+                "ejercicio_frecuencia": ejercicio_frecuencia,
+                "autonomia_autocuidado": autonomia_autocuidado,
+                "movilidad_basica": movilidad_basica,
+                "dieta_hiposodica": dieta_hiposodica,
+                "resumen_social_habitos": resumen_social_habitos,
                 "notas_post_consulta": notas_post_consulta.strip() or None,
                 "actuacion_post_completada": bool(hay_actuacion_post),
             }
