@@ -6,8 +6,9 @@ from typing import Any, Dict, List, Optional
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+import requests
 import streamlit as st
-from supabase import Client, create_client
+from supabase import create_client
 
 # -----------------------------------------------------------------------------
 # CONFIGURACIÓN DE LA PÁGINA
@@ -21,14 +22,106 @@ st.set_page_config(
 
 
 # -----------------------------------------------------------------------------
-# CONEXIÓN A SUPABASE
+# CLIENTE REST COMPATIBLE CON SUPABASE (SOPORTA CLAVES JWT Y sb_secret_ / sb_publishable_)
 # -----------------------------------------------------------------------------
+class _RESTResponse:
+    def __init__(self, data: Any):
+        self.data = data
+
+
+class _RESTQueryBuilder:
+    def __init__(self, base_url: str, headers: Dict[str, str], table_name: str):
+        self._url = f"{base_url}/rest/v1/{table_name}"
+        self._headers = dict(headers)
+        self._params: List[tuple] = []
+        self._orders: List[str] = []
+        self._method = "GET"
+        self._json_body: Any = None
+
+    def select(self, columns: str = "*") -> "_RESTQueryBuilder":
+        self._method = "GET"
+        self._params.append(("select", columns))
+        return self
+
+    def eq(self, column: str, value: Any) -> "_RESTQueryBuilder":
+        self._params.append((column, f"eq.{value}"))
+        return self
+
+    def order(self, column: str, desc: bool = False) -> "_RESTQueryBuilder":
+        direction = "desc" if desc else "asc"
+        self._orders.append(f"{column}.{direction}")
+        return self
+
+    def limit(self, count: int) -> "_RESTQueryBuilder":
+        self._params.append(("limit", str(count)))
+        return self
+
+    def insert(self, payload: Any) -> "_RESTQueryBuilder":
+        self._method = "POST"
+        self._json_body = payload
+        self._headers["Prefer"] = "return=representation"
+        return self
+
+    def update(self, payload: Any) -> "_RESTQueryBuilder":
+        self._method = "PATCH"
+        self._json_body = payload
+        self._headers["Prefer"] = "return=representation"
+        return self
+
+    def execute(self) -> _RESTResponse:
+        params = list(self._params)
+        if self._orders:
+            params.append(("order", ",".join(self._orders)))
+
+        resp = requests.request(
+            method=self._method,
+            url=self._url,
+            headers=self._headers,
+            params=params,
+            json=self._json_body,
+            timeout=20,
+        )
+        if resp.status_code >= 400:
+            raise RuntimeError(f"Error Supabase ({resp.status_code}): {resp.text}")
+        if resp.text.strip():
+            return _RESTResponse(resp.json())
+        return _RESTResponse([])
+
+
+class SupabaseRESTClient:
+    """Cliente ligero PostgREST compatible con la interfaz de supabase-py."""
+
+    def __init__(self, url: str, key: str):
+        clean_url = re.sub(r"/rest/v1/?$", "", url.strip()).rstrip("/")
+        self.base_url = clean_url
+        self.headers = {
+            "apikey": key.strip(),
+            "Authorization": f"Bearer {key.strip()}",
+            "Content-Type": "application/json",
+        }
+
+    def table(self, table_name: str) -> _RESTQueryBuilder:
+        return _RESTQueryBuilder(self.base_url, self.headers, table_name)
+
+
 @st.cache_resource
-def get_supabase_client() -> Client:
-    """Inicializa y devuelve el cliente de Supabase usando st.secrets."""
-    url = st.secrets["SUPABASE_URL"]
-    key = st.secrets["SUPABASE_KEY"]
-    return create_client(url, key)
+def get_supabase_client() -> Any:
+    """
+    Inicializa y devuelve el cliente de Supabase usando st.secrets["SUPABASE_URL"]
+    y st.secrets["SUPABASE_KEY"]. Soporta tanto claves clásicas JWT como las nuevas
+    claves 'sb_publishable_...' / 'sb_secret_...'.
+    """
+    raw_url = st.secrets["SUPABASE_URL"].strip()
+    clean_url = re.sub(r"/rest/v1/?$", "", raw_url).rstrip("/")
+    key = st.secrets["SUPABASE_KEY"].strip()
+
+    if key.startswith("sb_"):
+        return SupabaseRESTClient(clean_url, key)
+
+    try:
+        return create_client(clean_url, key)
+    except Exception:
+        return SupabaseRESTClient(clean_url, key)
 
 
 # -----------------------------------------------------------------------------
@@ -62,7 +155,7 @@ def check_password() -> bool:
 # -----------------------------------------------------------------------------
 # FUNCIONES DE ACCESO A DATOS (SUPABASE)
 # -----------------------------------------------------------------------------
-def buscar_paciente_por_nhc(supabase: Client, nhc: str) -> Optional[Dict[str, Any]]:
+def buscar_paciente_por_nhc(supabase: Any, nhc: str) -> Optional[Dict[str, Any]]:
     """Busca un paciente por NHC en la tabla 'pacientes'."""
     res = supabase.table("pacientes").select("*").eq("nhc", nhc).limit(1).execute()
     if res.data:
@@ -71,7 +164,7 @@ def buscar_paciente_por_nhc(supabase: Client, nhc: str) -> Optional[Dict[str, An
 
 
 def crear_paciente(
-    supabase: Client, nhc: str, iniciales_o_nombre: str, talla_cm: float
+    supabase: Any, nhc: str, iniciales_o_nombre: str, talla_cm: float
 ) -> Dict[str, Any]:
     """Crea un nuevo registro en la tabla 'pacientes'."""
     talla_val = (
@@ -89,7 +182,7 @@ def crear_paciente(
 
 
 def actualizar_talla_paciente(
-    supabase: Client, paciente_id: Any, nueva_talla_cm: float
+    supabase: Any, paciente_id: Any, nueva_talla_cm: float
 ) -> None:
     """Actualiza la talla de un paciente existente en la tabla 'pacientes'."""
     talla_val = (
@@ -102,21 +195,30 @@ def actualizar_talla_paciente(
     ).execute()
 
 
-def obtener_visitas_paciente(supabase: Client, paciente_id: Any) -> List[Dict[str, Any]]:
+def obtener_visitas_paciente(supabase: Any, paciente_id: Any) -> List[Dict[str, Any]]:
     """Obtiene todas las visitas del paciente ordenadas desde la más reciente."""
-    res = (
-        supabase.table("visitas_uic")
-        .select("*")
-        .eq("paciente_id", paciente_id)
-        .order("fecha_visita", desc=True)
-        .order("id", desc=True)
-        .execute()
-    )
+    try:
+        res = (
+            supabase.table("visitas_uic")
+            .select("*")
+            .eq("paciente_id", paciente_id)
+            .order("fecha_visita", desc=True)
+            .order("created_at", desc=True)
+            .execute()
+        )
+    except Exception:
+        res = (
+            supabase.table("visitas_uic")
+            .select("*")
+            .eq("paciente_id", paciente_id)
+            .order("fecha_visita", desc=True)
+            .execute()
+        )
     return res.data or []
 
 
 def insertar_visita_pre_consulta(
-    supabase: Client,
+    supabase: Any,
     payload_completo: Dict[str, Any],
     columnas_extendidas: List[str],
 ) -> None:
@@ -1110,9 +1212,10 @@ def main() -> None:
             df_visitas["fecha_dt"] = pd.to_datetime(
                 df_visitas["fecha_visita"], errors="coerce"
             )
-            df_plot = df_visitas.sort_values(
-                by=["fecha_dt", "id"], ascending=[True, True]
-            ).copy()
+            sort_cols = ["fecha_dt"] + (
+                ["created_at"] if "created_at" in df_visitas.columns else []
+            )
+            df_plot = df_visitas.sort_values(by=sort_cols, ascending=True).copy()
             df_plot["fecha_label"] = (
                 df_plot["fecha_dt"]
                 .dt.strftime("%Y-%m-%d")
