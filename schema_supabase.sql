@@ -83,24 +83,6 @@ CREATE TABLE IF NOT EXISTS public.visitas_uic (
     notas_post_consulta TEXT
 );
 
--- Migraciones de columnas adicionales en visitas_uic
-ALTER TABLE public.visitas_uic ADD COLUMN IF NOT EXISTS inc_cardio_muerte BOOLEAN DEFAULT FALSE;
-ALTER TABLE public.visitas_uic ADD COLUMN IF NOT EXISTS inc_cardio_ingreso_ic BOOLEAN DEFAULT FALSE;
-ALTER TABLE public.visitas_uic ADD COLUMN IF NOT EXISTS inc_cardio_ingreso_otras BOOLEAN DEFAULT FALSE;
-ALTER TABLE public.visitas_uic ADD COLUMN IF NOT EXISTS inc_cardio_urgencias_ic BOOLEAN DEFAULT FALSE;
-ALTER TABLE public.visitas_uic ADD COLUMN IF NOT EXISTS inc_cardio_diureticos_iv BOOLEAN DEFAULT FALSE;
-ALTER TABLE public.visitas_uic ADD COLUMN IF NOT EXISTS inc_cardio_aumento_diureticos_vo BOOLEAN DEFAULT FALSE;
-ALTER TABLE public.visitas_uic ADD COLUMN IF NOT EXISTS inc_nocardio_ingreso BOOLEAN DEFAULT FALSE;
-ALTER TABLE public.visitas_uic ADD COLUMN IF NOT EXISTS inc_nocardio_urgencias BOOLEAN DEFAULT FALSE;
-ALTER TABLE public.visitas_uic ADD COLUMN IF NOT EXISTS fc_media_domicilio INTEGER;
-ALTER TABLE public.visitas_uic ADD COLUMN IF NOT EXISTS peso_medio_domicilio NUMERIC(5,2);
-ALTER TABLE public.visitas_uic ADD COLUMN IF NOT EXISTS tiene_glucemia_domicilio BOOLEAN DEFAULT FALSE;
-ALTER TABLE public.visitas_uic ADD COLUMN IF NOT EXISTS glucemia_media_domicilio INTEGER;
-ALTER TABLE public.visitas_uic ADD COLUMN IF NOT EXISTS derivacion_hd_diureticos_iv BOOLEAN DEFAULT FALSE;
-ALTER TABLE public.visitas_uic ADD COLUMN IF NOT EXISTS tratamiento_cardiologico TEXT;
-ALTER TABLE public.visitas_uic ADD COLUMN IF NOT EXISTS tratamiento_no_cardiologico TEXT;
-ALTER TABLE public.visitas_uic ADD COLUMN IF NOT EXISTS texto_gaia_bruto TEXT;
-
 -- 3. Tabla de Analíticas UIC
 CREATE TABLE IF NOT EXISTS public.analiticas_uic (
     id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
@@ -109,6 +91,7 @@ CREATE TABLE IF NOT EXISTS public.analiticas_uic (
     fecha_analitica DATE NOT NULL DEFAULT CURRENT_DATE,
     hb NUMERIC(5,2),
     hto NUMERIC(5,2),
+    vcm NUMERIC(6,2),
     plaquetas NUMERIC(7,2),
     probnp NUMERIC(10,2),
     ca125 NUMERIC(8,2),
@@ -118,12 +101,28 @@ CREATE TABLE IF NOT EXISTS public.analiticas_uic (
     urea NUMERIC(6,2),
     k NUMERIC(5,2),
     na NUMERIC(5,2),
+    acido_urico NUMERIC(5,2),
     gpt NUMERIC(6,2),
     inr NUMERIC(5,2),
     pcr NUMERIC(6,2),
     tpi NUMERIC(10,2),
+    colesterol_total NUMERIC(6,2),
+    ldl NUMERIC(6,2),
+    hdl NUMERIC(6,2),
+    trigliceridos NUMERIC(6,2),
+    lpa NUMERIC(8,2),
+    cac_orina NUMERIC(8,2),
     texto_bruto TEXT
 );
+
+ALTER TABLE public.analiticas_uic ADD COLUMN IF NOT EXISTS vcm NUMERIC(6,2);
+ALTER TABLE public.analiticas_uic ADD COLUMN IF NOT EXISTS colesterol_total NUMERIC(6,2);
+ALTER TABLE public.analiticas_uic ADD COLUMN IF NOT EXISTS ldl NUMERIC(6,2);
+ALTER TABLE public.analiticas_uic ADD COLUMN IF NOT EXISTS hdl NUMERIC(6,2);
+ALTER TABLE public.analiticas_uic ADD COLUMN IF NOT EXISTS trigliceridos NUMERIC(6,2);
+ALTER TABLE public.analiticas_uic ADD COLUMN IF NOT EXISTS lpa NUMERIC(8,2);
+ALTER TABLE public.analiticas_uic ADD COLUMN IF NOT EXISTS cac_orina NUMERIC(8,2);
+ALTER TABLE public.analiticas_uic ADD COLUMN IF NOT EXISTS acido_urico NUMERIC(5,2);
 
 -- Índices
 CREATE INDEX IF NOT EXISTS idx_pacientes_nhc ON public.pacientes(nhc);

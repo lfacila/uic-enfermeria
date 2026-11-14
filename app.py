@@ -158,6 +158,7 @@ def check_password() -> bool:
 PARAMETROS_ANALITICA_META = [
     ("hb", "Hb", "g/dL"),
     ("hto", "Hto", "%"),
+    ("vcm", "VCM", "fL"),
     ("plaquetas", "Plaquetas", "10*9/L"),
     ("probnp", "NT-proBNP / ProBNP", "pg/mL"),
     ("ca125", "CA 125", "U/mL"),
@@ -166,6 +167,13 @@ PARAMETROS_ANALITICA_META = [
     ("urea", "Urea", "mg/dL"),
     ("k", "Potasio (K)", "mEq/L"),
     ("na", "Sodio (Na)", "mEq/L"),
+    ("acido_urico", "Ácido Úrico", "mg/dL"),
+    ("colesterol_total", "Colesterol Total", "mg/dL"),
+    ("ldl", "LDL", "mg/dL"),
+    ("hdl", "HDL", "mg/dL"),
+    ("trigliceridos", "Triglicéridos (TG)", "mg/dL"),
+    ("lpa", "Lipoproteína (a)", "mg/dL"),
+    ("cac_orina", "Albúmina/Creatinina orina", "mg/g"),
     ("gpt", "GPT (ALT)", "U/L"),
     ("inr", "INR", ""),
     ("pcr", "PCR", "mg/dL"),
@@ -185,14 +193,16 @@ def _to_float(val_str: Optional[str]) -> Optional[float]:
 
 def parsear_analitica_hguv(texto: str) -> Dict[str, Any]:
     """
-    Extrae automáticamente Hb, Hto, Plaquetas, ProBNP, CA 125, Cr, FGE, Urea,
-    K, Na, GPT, INR, PCR y TpI (si existen) a partir del texto copiado del
-    informe de laboratorio del HGUV.
+    Extrae automáticamente Hb, Hto, VCM, Plaquetas, ProBNP, CA 125, Cr, FGE, Urea,
+    K, Na, Ácido Úrico, Colesterol Total, LDL, HDL, TG, Lipoproteína (a),
+    Albúmina/Creatinina en orina, GPT, INR, PCR y TpI (si existen) a partir del
+    texto copiado del informe de laboratorio del HGUV.
     """
     resultado: Dict[str, Any] = {
         "fecha_analitica": date.today(),
         "hb": None,
         "hto": None,
+        "vcm": None,
         "plaquetas": None,
         "probnp": None,
         "ca125": None,
@@ -202,6 +212,13 @@ def parsear_analitica_hguv(texto: str) -> Dict[str, Any]:
         "urea": None,
         "k": None,
         "na": None,
+        "acido_urico": None,
+        "colesterol_total": None,
+        "ldl": None,
+        "hdl": None,
+        "trigliceridos": None,
+        "lpa": None,
+        "cac_orina": None,
         "gpt": None,
         "inr": None,
         "pcr": None,
@@ -227,13 +244,21 @@ def parsear_analitica_hguv(texto: str) -> Dict[str, Any]:
     patrones = {
         "hb": r"(?:Hemoglobina|(?<!\w)Hb(?!\s*A1c)(?!\w))\s*(?:\*+\s*)?([0-9]+(?:[.,][0-9]+)?)",
         "hto": r"(?:Hematocrito|(?<!\w)Hto(?!\w))\s*(?:\*+\s*)?([0-9]+(?:[.,][0-9]+)?)",
+        "vcm": r"(?:Volumen\s+Corpuscular\s+Medio|(?<!\w)VCM(?!\w))\s*(?:\*+\s*)?([0-9]+(?:[.,][0-9]+)?)",
         "plaquetas": r"(?:Plaquetas)\s*(?:\*+\s*)?([0-9]+(?:[.,][0-9]+)?)",
         "probnp": r"(?:NT-?proBNP|ProBNP|P[eé]ptido\s+natriur[eé]tico(?:\s+tipo\s+B)?)\s*(?:(?:\([^)]*\))?\s*)?(?:\*+\s*)?(?:[<>]=?\s*)?([0-9]+(?:[.,][0-9]+)?)",
         "ca125": r"(?:Ant[ií]geno\s+carbohidrato\s+125|CA[\s-]*125)\s*(?:(?:\([^)]*\))?\s*)?(?:\*+\s*)?(?:[<>]=?\s*)?([0-9]+(?:[.,][0-9]+)?)",
-        "cr": r"(?:Ser\s*-\s*)?(?:Creatinina|(?<!\w)Cr(?!\w))\s*(?:\*+\s*)?([0-9]+(?:[.,][0-9]+)?)",
+        "cr": r"(?<!/)(?<!/\s)(?:Ser\s*-\s*)?(?:Creatinina(?!(?:\s+en)?\s+orina)|(?<!\w)Cr(?!\w))\s*(?:\*+\s*)?([0-9]+(?:[.,][0-9]+)?)",
         "urea": r"(?:Ser\s*-\s*)?(?:Urea)\s*(?:\*+\s*)?([0-9]+(?:[.,][0-9]+)?)",
         "k": r"(?:Ser\s*-\s*)?(?:Potasio|(?<!\w)K(?!\w))\s*(?:\*+\s*)?([0-9]+(?:[.,][0-9]+)?)",
         "na": r"(?:Ser\s*-\s*)?(?:Sodio|(?<!\w)Na(?!\w))\s*(?:\*+\s*)?([0-9]+(?:[.,][0-9]+)?)",
+        "acido_urico": r"(?:Ser\s*-\s*)?(?:[AÁ]cido\s+[UÚ]rico|Urato)\s*(?:\*+\s*)?([0-9]+(?:[.,][0-9]+)?)",
+        "colesterol_total": r"(?:Ser\s*-\s*)?Colesterol(?:\s+total)?(?!\s*(?:de\s+)?(?:HDL|LDL|no|VLDL|esterificado))\s*(?:\*+\s*)?([0-9]+(?:[.,][0-9]+)?)",
+        "ldl": r"(?:Colesterol\s+(?:de\s+)?LDL|LDL[\s-]*Colesterol|(?<!\w)c-?LDL(?!\w)|(?<!\w)LDL(?!\w))\s*(?:(?:\([^)]*\))?\s*)?(?:\*+\s*)?([0-9]+(?:[.,][0-9]+)?)",
+        "hdl": r"(?<!no\s)(?<!no-)(?:Colesterol\s+(?:de\s+)?HDL|HDL[\s-]*Colesterol|(?<!\w)c-?HDL(?!\w)|(?<!\w)HDL(?!\w))\s*(?:(?:\([^)]*\))?\s*)?(?:\*+\s*)?([0-9]+(?:[.,][0-9]+)?)",
+        "trigliceridos": r"(?:Ser\s*-\s*)?(?:Triglic[eé]ridos|(?<!\w)TG(?!\w))\s*(?:\*+\s*)?([0-9]+(?:[.,][0-9]+)?)",
+        "lpa": r"(?:Lipoprote[ií]na\s*\(?a\)?|(?<!\w)Lp\s*\(a\)|(?<!\w)Lpa(?!\w))\s*(?:\*+\s*)?(?:[<>]=?\s*)?([0-9]+(?:[.,][0-9]+)?)",
+        "cac_orina": r"(?:(?:Cociente|Relaci[oó]n|[IÍ]ndice)\s+(?:Alb[uú]mina|Microalbuminuria)\s*/\s*Creatinina|Alb[uú]mina\s*/\s*Creatin(?:ina|uria)|Microalbuminuria\s*/\s*Creatinina|(?<!\w)CAC(?:\s+orina)?(?!\w))\s*(?:(?:\([^)]*\))?\s*)?(?:\*+\s*)?(?:[<>]=?\s*)?([0-9]+(?:[.,][0-9]+)?)",
         "gpt": r"(?:Alanina\s+aminotransferasa(?:\s*\(?(?:ALT|GPT)\)?)?|Transaminasa\s+GPT|(?<!\w)GPT(?:\s*/\s*ALT)?|(?<!\w)ALT(?:\s*/\s*GPT)?)\s*(?:(?:\([^)]*\))?\s*)?(?:\*+\s*)?([0-9]+(?:[.,][0-9]+)?)",
         "inr": r"(?:[IÍ]ndice\s+Internacional\s+Normalizado|(?<!\w)INR(?!\w))\s*(?:(?:\([^)]*\))?\s*)?(?:\*+\s*)?([0-9]+(?:[.,][0-9]+)?)",
         "pcr": r"(?:Prote[ií]na\s+C\s+Reactiva|(?<!\w)PCR(?!\w))\s*(?:(?:\([^)]*\))?\s*)?(?:\*+\s*)?(?:[<>]=?\s*)?([0-9]+(?:[.,][0-9]+)?)",
@@ -1180,12 +1205,21 @@ def generar_texto_consulta_enfermeria(
 
 
 def mostrar_cuadro_copia_hc(
-    titulo: str, texto_plano: str, key_prefix: str, height: int = 260
+    titulo: str, texto_plano: str, key_prefix: str, height: int = 280
 ) -> None:
     """
     Muestra tanto un cuadro de texto plano editable (st.text_area) como un bloque
     con botón de copia rápida en 1 clic (st.code) para pegar en la Historia Clínica.
+    Sincroniza automáticamente el contenido del text_area cada vez que cambian los
+    checkboxes de enfermería o se añade una analítica.
     """
+    clave_textarea = f"{key_prefix}_textarea"
+    clave_source = f"{key_prefix}_last_source"
+
+    if st.session_state.get(clave_source) != texto_plano:
+        st.session_state[clave_textarea] = texto_plano
+        st.session_state[clave_source] = texto_plano
+
     st.markdown(f"#### 📋 {titulo}")
     col_txt, col_code = st.columns(2)
     with col_txt:
@@ -1194,9 +1228,8 @@ def mostrar_cuadro_copia_hc(
         )
         texto_editado = st.text_area(
             "Texto plano para Historia Clínica (HC)",
-            value=texto_plano,
             height=height,
-            key=f"{key_prefix}_textarea",
+            key=clave_textarea,
             label_visibility="collapsed",
         )
     with col_code:
@@ -1850,165 +1883,177 @@ def main() -> None:
                 height=80,
             )
 
+            # Construir el payload de la visita actual en tiempo real para que el texto plano
+            # refleje al instante todas las casillas marcadas por enfermería y la analítica
+            acudio_urgencias_any = bool(
+                inc_cardio_urgencias_ic or inc_nocardio_urgencias
+            )
+            aumento_diureticos_any = bool(
+                inc_cardio_diureticos_iv or inc_cardio_aumento_diureticos_vo
+            )
+            hay_actuacion_post = any(
+                [
+                    furosemida_iv_bolo,
+                    perfusor_furosemida,
+                    ferinject_iv,
+                    derivacion_hd_diureticos_iv,
+                    derivacion_hd_levosimendan,
+                    analitica_realizada,
+                    bool(notas_post_consulta.strip()),
+                ]
+            )
+
+            payload_visita: Dict[str, Any] = {
+                "paciente_id": paciente_actual["id"],
+                "fecha_visita": fecha_visita_input.isoformat(),
+                "incidencias_bool": bool(incidencias_bool),
+                "inc_cardio_muerte": bool(inc_cardio_muerte)
+                if incidencias_bool
+                else False,
+                "inc_cardio_ingreso_ic": bool(inc_cardio_ingreso_ic)
+                if incidencias_bool
+                else False,
+                "inc_cardio_ingreso_otras": bool(inc_cardio_ingreso_otras)
+                if incidencias_bool
+                else False,
+                "inc_cardio_urgencias_ic": bool(inc_cardio_urgencias_ic)
+                if incidencias_bool
+                else False,
+                "inc_cardio_diureticos_iv": bool(inc_cardio_diureticos_iv)
+                if incidencias_bool
+                else False,
+                "inc_cardio_aumento_diureticos_vo": bool(
+                    inc_cardio_aumento_diureticos_vo
+                )
+                if incidencias_bool
+                else False,
+                "inc_nocardio_ingreso": bool(inc_nocardio_ingreso)
+                if incidencias_bool
+                else False,
+                "inc_nocardio_urgencias": bool(inc_nocardio_urgencias)
+                if incidencias_bool
+                else False,
+                "acudio_urgencias": acudio_urgencias_any
+                if incidencias_bool
+                else False,
+                "aumento_diureticos_ambulatorio": aumento_diureticos_any
+                if incidencias_bool
+                else False,
+                "detalle_incidencias": (
+                    resumen_incidencias_str if incidencias_bool else None
+                ),
+                "clase_funcional_nyha": clase_nyha,
+                "aporta_hoja_ta_domicilio": bool(aporta_hoja_ta_domicilio),
+                "tas_media_domicilio": (
+                    tas_media_domicilio if aporta_hoja_ta_domicilio else None
+                ),
+                "tad_media_domicilio": (
+                    tad_media_domicilio if aporta_hoja_ta_domicilio else None
+                ),
+                "fc_media_domicilio": (
+                    fc_media_domicilio if aporta_hoja_ta_domicilio else None
+                ),
+                "peso_medio_domicilio": (
+                    peso_medio_domicilio if aporta_hoja_ta_domicilio else None
+                ),
+                "tiene_glucemia_domicilio": bool(tiene_glucemia_domicilio),
+                "glucemia_media_domicilio": (
+                    glucemia_media_domicilio
+                    if tiene_glucemia_domicilio
+                    else None
+                ),
+                "peso_kg": float(peso_kg),
+                "diferencia_peso_kg": (
+                    float(diferencia_peso_kg)
+                    if diferencia_peso_kg is not None
+                    else 0.0
+                ),
+                "imc": float(imc_calculado),
+                "tas_consulta": int(tas_consulta),
+                "tad_consulta": int(tad_consulta),
+                "fc_consulta": int(fc_consulta),
+                "ecg_realizado": bool(ecg_realizado),
+                "analitica_realizada": bool(analitica_realizada),
+                "ferinject_iv": bool(ferinject_iv),
+                "dosis_ferinject_mg": (
+                    int(dosis_ferinject_mg) if ferinject_iv else None
+                ),
+                "furosemida_iv_bolo": bool(furosemida_iv_bolo),
+                "dosis_furosemida_iv_mg": (
+                    int(dosis_furosemida_iv_mg)
+                    if furosemida_iv_bolo
+                    else None
+                ),
+                "perfusor_furosemida": bool(perfusor_furosemida),
+                "derivacion_hd_diureticos_iv": bool(
+                    derivacion_hd_diureticos_iv
+                ),
+                "derivacion_hd_levosimendan": bool(
+                    derivacion_hd_levosimendan
+                ),
+                "medicacion_habitual": medicacion_habitual.strip(),
+                "buen_cumplimiento": bool(buen_cumplimiento),
+                "observaciones_cumplimiento": observaciones_cumplimiento.strip()
+                or None,
+                "notas_post_consulta": notas_post_consulta.strip() or None,
+                "actuacion_post_completada": bool(hay_actuacion_post),
+            }
+
+            # Si el usuario ha extraído una analítica en la Pestaña 2 (tanto si ya la grabó
+            # como si está en el Paso 1 en borrador), incluirla automáticamente en el texto plano
+            analiticas_guardadas_pac = st.session_state.get("analiticas_paciente") or []
+            borrador_ana_activo = st.session_state.get("borrador_analitica")
+            if borrador_ana_activo and any(
+                borrador_ana_activo.get(k) is not None
+                for k, _, _ in PARAMETROS_ANALITICA_META
+            ):
+                analiticas_para_texto_hc = [borrador_ana_activo] + list(
+                    analiticas_guardadas_pac
+                )
+            else:
+                analiticas_para_texto_hc = list(analiticas_guardadas_pac)
+
+            texto_hc_en_vivo = generar_texto_consulta_enfermeria(
+                paciente=st.session_state["paciente_actual"],
+                datos_visita=payload_visita,
+                talla_cm=talla_actual_cm,
+                resumen_incidencias_str=resumen_incidencias_str,
+                analiticas_paciente=analiticas_para_texto_hc,
+            )
+
             st.write("")
             guardar_pre_btn = st.button(
-                "💾 Guardar Consulta de Enfermería y Generar Texto Plano para la HC",
+                "💾 Guardar Consulta de Enfermería en Base de Datos",
                 type="primary",
                 use_container_width=True,
             )
 
             if guardar_pre_btn:
                 try:
-                    acudio_urgencias_any = bool(
-                        inc_cardio_urgencias_ic or inc_nocardio_urgencias
-                    )
-                    aumento_diureticos_any = bool(
-                        inc_cardio_diureticos_iv or inc_cardio_aumento_diureticos_vo
-                    )
-                    hay_actuacion_post = any(
-                        [
-                            furosemida_iv_bolo,
-                            perfusor_furosemida,
-                            ferinject_iv,
-                            derivacion_hd_diureticos_iv,
-                            derivacion_hd_levosimendan,
-                            analitica_realizada,
-                            bool(notas_post_consulta.strip()),
-                        ]
-                    )
-
-                    payload_visita: Dict[str, Any] = {
-                        "paciente_id": paciente_actual["id"],
-                        "fecha_visita": fecha_visita_input.isoformat(),
-                        "incidencias_bool": bool(incidencias_bool),
-                        "inc_cardio_muerte": bool(inc_cardio_muerte)
-                        if incidencias_bool
-                        else False,
-                        "inc_cardio_ingreso_ic": bool(inc_cardio_ingreso_ic)
-                        if incidencias_bool
-                        else False,
-                        "inc_cardio_ingreso_otras": bool(inc_cardio_ingreso_otras)
-                        if incidencias_bool
-                        else False,
-                        "inc_cardio_urgencias_ic": bool(inc_cardio_urgencias_ic)
-                        if incidencias_bool
-                        else False,
-                        "inc_cardio_diureticos_iv": bool(inc_cardio_diureticos_iv)
-                        if incidencias_bool
-                        else False,
-                        "inc_cardio_aumento_diureticos_vo": bool(
-                            inc_cardio_aumento_diureticos_vo
-                        )
-                        if incidencias_bool
-                        else False,
-                        "inc_nocardio_ingreso": bool(inc_nocardio_ingreso)
-                        if incidencias_bool
-                        else False,
-                        "inc_nocardio_urgencias": bool(inc_nocardio_urgencias)
-                        if incidencias_bool
-                        else False,
-                        "acudio_urgencias": acudio_urgencias_any
-                        if incidencias_bool
-                        else False,
-                        "aumento_diureticos_ambulatorio": aumento_diureticos_any
-                        if incidencias_bool
-                        else False,
-                        "detalle_incidencias": (
-                            resumen_incidencias_str if incidencias_bool else None
-                        ),
-                        "clase_funcional_nyha": clase_nyha,
-                        "aporta_hoja_ta_domicilio": bool(aporta_hoja_ta_domicilio),
-                        "tas_media_domicilio": (
-                            tas_media_domicilio if aporta_hoja_ta_domicilio else None
-                        ),
-                        "tad_media_domicilio": (
-                            tad_media_domicilio if aporta_hoja_ta_domicilio else None
-                        ),
-                        "fc_media_domicilio": (
-                            fc_media_domicilio if aporta_hoja_ta_domicilio else None
-                        ),
-                        "peso_medio_domicilio": (
-                            peso_medio_domicilio if aporta_hoja_ta_domicilio else None
-                        ),
-                        "tiene_glucemia_domicilio": bool(tiene_glucemia_domicilio),
-                        "glucemia_media_domicilio": (
-                            glucemia_media_domicilio
-                            if tiene_glucemia_domicilio
-                            else None
-                        ),
-                        "peso_kg": float(peso_kg),
-                        "diferencia_peso_kg": (
-                            float(diferencia_peso_kg)
-                            if diferencia_peso_kg is not None
-                            else 0.0
-                        ),
-                        "imc": float(imc_calculado),
-                        "tas_consulta": int(tas_consulta),
-                        "tad_consulta": int(tad_consulta),
-                        "fc_consulta": int(fc_consulta),
-                        "ecg_realizado": bool(ecg_realizado),
-                        "analitica_realizada": bool(analitica_realizada),
-                        "ferinject_iv": bool(ferinject_iv),
-                        "dosis_ferinject_mg": (
-                            int(dosis_ferinject_mg) if ferinject_iv else None
-                        ),
-                        "furosemida_iv_bolo": bool(furosemida_iv_bolo),
-                        "dosis_furosemida_iv_mg": (
-                            int(dosis_furosemida_iv_mg)
-                            if furosemida_iv_bolo
-                            else None
-                        ),
-                        "perfusor_furosemida": bool(perfusor_furosemida),
-                        "derivacion_hd_diureticos_iv": bool(
-                            derivacion_hd_diureticos_iv
-                        ),
-                        "derivacion_hd_levosimendan": bool(
-                            derivacion_hd_levosimendan
-                        ),
-                        "medicacion_habitual": medicacion_habitual.strip(),
-                        "buen_cumplimiento": bool(buen_cumplimiento),
-                        "observaciones_cumplimiento": observaciones_cumplimiento.strip()
-                        or None,
-                        "notas_post_consulta": notas_post_consulta.strip() or None,
-                        "actuacion_post_completada": bool(hay_actuacion_post),
-                    }
-
                     supabase.table("visitas_uic").insert(payload_visita).execute()
 
                     visitas_actualizadas = obtener_visitas_paciente(
                         supabase, paciente_actual["id"]
                     )
                     st.session_state["visitas_paciente"] = visitas_actualizadas
-
-                    st.session_state["texto_pre_consulta"] = (
-                        generar_texto_consulta_enfermeria(
-                            paciente=st.session_state["paciente_actual"],
-                            datos_visita=payload_visita,
-                            talla_cm=talla_actual_cm,
-                            resumen_incidencias_str=resumen_incidencias_str,
-                            analiticas_paciente=st.session_state.get(
-                                "analiticas_paciente"
-                            ),
-                        )
-                    )
+                    st.session_state["texto_pre_consulta"] = texto_hc_en_vivo
                     st.success("✅ Consulta guardada correctamente en Supabase.")
                 except Exception as exc:
                     st.error(f"Error al guardar la consulta: {exc}")
 
-            if st.session_state.get("texto_pre_consulta"):
-                st.markdown("---")
-                mostrar_cuadro_copia_hc(
-                    titulo="Texto Plano para Copiar a la Historia Clínica (HC)",
-                    texto_plano=st.session_state["texto_pre_consulta"],
-                    key_prefix="consulta_hc",
-                )
-                if st.button(
-                    "👤 Finalizar con este paciente y pasar al siguiente",
-                    key="btn_fin_pac_tab1",
-                    use_container_width=True,
-                ):
-                    limpiar_paciente_actual()
-                    st.rerun()
+            st.markdown("---")
+            mostrar_cuadro_copia_hc(
+                titulo="Texto Plano de Enfermería + Analítica para Copiar a la Historia Clínica (Se actualiza en vivo)",
+                texto_plano=texto_hc_en_vivo,
+                key_prefix="consulta_hc",
+            )
+            if st.button(
+                "👤 Finalizar con este paciente y pasar al siguiente",
+                key="btn_fin_pac_tab1",
+                use_container_width=True,
+            ):
+                limpiar_paciente_actual()
+                st.rerun()
 
             # Desplegable opcional para actualizar una visita previa tras consulta médica
             if visitas_paciente:
@@ -2310,6 +2355,9 @@ def main() -> None:
                             hide_index=True,
                         )
 
+                # Actualizar el borrador en sesión con cualquier ajuste manual que haya hecho el usuario
+                st.session_state["borrador_analitica"] = dict(valores_editados)
+
                 st.write("")
                 if st.button(
                     "💾 Paso 2: Confirmar y Grabar Analítica en Base de Datos y Generar Texto HC",
@@ -2322,6 +2370,7 @@ def main() -> None:
                             "fecha_analitica": fecha_analitica_val.isoformat(),
                             "hb": valores_editados.get("hb"),
                             "hto": valores_editados.get("hto"),
+                            "vcm": valores_editados.get("vcm"),
                             "plaquetas": valores_editados.get("plaquetas"),
                             "probnp": valores_editados.get("probnp"),
                             "ca125": valores_editados.get("ca125"),
@@ -2331,6 +2380,13 @@ def main() -> None:
                             "urea": valores_editados.get("urea"),
                             "k": valores_editados.get("k"),
                             "na": valores_editados.get("na"),
+                            "acido_urico": valores_editados.get("acido_urico"),
+                            "colesterol_total": valores_editados.get("colesterol_total"),
+                            "ldl": valores_editados.get("ldl"),
+                            "hdl": valores_editados.get("hdl"),
+                            "trigliceridos": valores_editados.get("trigliceridos"),
+                            "lpa": valores_editados.get("lpa"),
+                            "cac_orina": valores_editados.get("cac_orina"),
                             "gpt": valores_editados.get("gpt"),
                             "inr": valores_editados.get("inr"),
                             "pcr": valores_editados.get("pcr"),
@@ -2653,6 +2709,7 @@ def main() -> None:
                             "fecha_analitica",
                             "hb",
                             "hto",
+                            "vcm",
                             "plaquetas",
                             "probnp",
                             "ca125",
@@ -2662,6 +2719,13 @@ def main() -> None:
                             "urea",
                             "k",
                             "na",
+                            "acido_urico",
+                            "colesterol_total",
+                            "ldl",
+                            "hdl",
+                            "trigliceridos",
+                            "lpa",
+                            "cac_orina",
                             "gpt",
                             "inr",
                             "pcr",
