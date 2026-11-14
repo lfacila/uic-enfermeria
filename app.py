@@ -2051,6 +2051,78 @@ def main() -> None:
                     index=idx_dieta,
                 )
 
+                # Tabaco (Sí / No / Exfumador y cuánto si fuma)
+                ops_tabaco = ["No", "Exfumador/a", "Sí"]
+                tab_prev = (
+                    ultima_visita.get("tabaco_estado") if ultima_visita else None
+                )
+                idx_tab = (
+                    ops_tabaco.index(tab_prev) if tab_prev in ops_tabaco else 0
+                )
+                tabaco_estado = st.radio(
+                    "🚬 Tabaco",
+                    options=ops_tabaco,
+                    index=idx_tab,
+                    horizontal=True,
+                )
+                tabaco_cantidad: Optional[str] = None
+                if tabaco_estado == "Sí":
+                    ops_tab_cant = [
+                        "< 5 cig/día",
+                        "5 - 10 cig/día",
+                        "10 - 20 cig/día (1 paq.)",
+                        "> 20 cig/día",
+                    ]
+                    tc_prev = (
+                        ultima_visita.get("tabaco_cantidad")
+                        if ultima_visita
+                        else None
+                    )
+                    idx_tc = (
+                        ops_tab_cant.index(tc_prev)
+                        if tc_prev in ops_tab_cant
+                        else 1
+                    )
+                    tabaco_cantidad = st.selectbox(
+                        "¿Cuánto tabaco?", options=ops_tab_cant, index=idx_tc
+                    )
+
+                # Alcohol (Sí / No y cuánto si consume)
+                ops_alcohol = ["No", "Sí"]
+                alc_prev = (
+                    ultima_visita.get("alcohol_estado") if ultima_visita else None
+                )
+                idx_alc = (
+                    ops_alcohol.index(alc_prev) if alc_prev in ops_alcohol else 0
+                )
+                alcohol_estado = st.radio(
+                    "🍷 Alcohol",
+                    options=ops_alcohol,
+                    index=idx_alc,
+                    horizontal=True,
+                )
+                alcohol_cantidad: Optional[str] = None
+                if alcohol_estado == "Sí":
+                    ops_alc_cant = [
+                        "Ocasional (fines de semana)",
+                        "1 copa/cerveza al día",
+                        "2 copas al día",
+                        "> 2 copas al día / habitual",
+                    ]
+                    ac_prev = (
+                        ultima_visita.get("alcohol_cantidad")
+                        if ultima_visita
+                        else None
+                    )
+                    idx_ac = (
+                        ops_alc_cant.index(ac_prev)
+                        if ac_prev in ops_alc_cant
+                        else 0
+                    )
+                    alcohol_cantidad = st.selectbox(
+                        "¿Cuánto alcohol?", options=ops_alc_cant, index=idx_ac
+                    )
+
             # Construir línea de resumen social y hábitos para la HC
             convivencia_txt = (
                 "Vive solo/a"
@@ -2061,13 +2133,26 @@ def main() -> None:
             if tipo_ejercicio == "Nada (Sedentario)":
                 ejercicio_txt = "Sedentario (no realiza ejercicio)"
             else:
-                ejercicio_txt = f"{tipo_ejercicio} ({ejercicio_duracion}, {ejercicio_frecuencia})"
+                ejercicio_txt = (
+                    f"{tipo_ejercicio} ({ejercicio_duracion}, {ejercicio_frecuencia})"
+                )
+
+            tabaco_txt = (
+                f"Sí ({tabaco_cantidad})"
+                if tabaco_estado == "Sí"
+                else tabaco_estado
+            )
+            alcohol_txt = (
+                f"Sí ({alcohol_cantidad})"
+                if alcohol_estado == "Sí"
+                else "No"
+            )
 
             resumen_social_habitos = (
                 f"{convivencia_txt} | Soporte 24h para UHD: {uhd_txt} | "
                 f"Acude acompañado: {viene_acompanado} | Situación laboral: {situacion_laboral} | "
-                f"Actividad física: {ejercicio_txt} | Autocuidado: {autonomia_autocuidado} | "
-                f"Movilidad: {movilidad_basica} | Dieta: {dieta_hiposodica}."
+                f"Actividad física: {ejercicio_txt} | Tabaco: {tabaco_txt} | Alcohol: {alcohol_txt} | "
+                f"Autocuidado: {autonomia_autocuidado} | Movilidad: {movilidad_basica} | Dieta: {dieta_hiposodica}."
             )
 
             st.markdown("---")
@@ -2221,6 +2306,10 @@ def main() -> None:
                 "autonomia_autocuidado": autonomia_autocuidado,
                 "movilidad_basica": movilidad_basica,
                 "dieta_hiposodica": dieta_hiposodica,
+                "tabaco_estado": tabaco_estado,
+                "tabaco_cantidad": tabaco_cantidad,
+                "alcohol_estado": alcohol_estado,
+                "alcohol_cantidad": alcohol_cantidad,
                 "resumen_social_habitos": resumen_social_habitos,
                 "notas_post_consulta": notas_post_consulta.strip() or None,
                 "actuacion_post_completada": bool(hay_actuacion_post),
