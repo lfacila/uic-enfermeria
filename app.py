@@ -1,9 +1,12 @@
 import base64
 from datetime import date, datetime
+from io import BytesIO
 import os
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
+from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.utils import get_column_letter
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -1374,6 +1377,190 @@ def render_angel_corner_logo() -> None:
 
 
 # -----------------------------------------------------------------------------
+# EXPORTACIÓN A EXCEL (.XLSX) DE TODOS LOS DATOS
+# -----------------------------------------------------------------------------
+_EXCEL_ILLEGAL_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+
+
+def _limpiar_df_para_excel(df: pd.DataFrame) -> pd.DataFrame:
+    """Elimina zonas horarias y caracteres de control ilegales para compatibilidad total con openpyxl."""
+    if df.empty:
+        return df
+    df_out = df.copy()
+    for col in df_out.columns:
+        if pd.api.types.is_datetime64_any_dtype(df_out[col]):
+            try:
+                df_out[col] = df_out[col].dt.tz_localize(None)
+            except Exception:
+                df_out[col] = df_out[col].astype(str)
+        elif df_out[col].dtype == object:
+            def _clean_cell(val: Any) -> Any:
+                if isinstance(val, list):
+                    val = ", ".join(map(str, val))
+                if isinstance(val, str):
+                    return _EXCEL_ILLEGAL_CHARS_RE.sub("", val)
+                return val
+
+            df_out[col] = df_out[col].apply(_clean_cell)
+    return df_out
+
+
+def _estilizar_hoja_excel(ws: Any) -> None:
+    """Aplica estilo de cabecera, filtros, inmovilizado superior y ancho automático."""
+    header_fill = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
+    header_font = Font(color="FFFFFF", bold=True, size=10)
+    header_align = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+    if ws.max_row >= 1 and ws.max_column >= 1:
+        ws.freeze_panes = "A2"
+        ws.auto_filter.ref = ws.dimensions
+        for cell in ws[1]:
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = header_align
+
+    for col_idx in range(1, ws.max_column + 1):
+        col_letter = get_column_letter(col_idx)
+        max_len = 10
+        for row_idx in range(1, min(ws.max_row + 1, 250)):
+            val = ws.cell(row=row_idx, column=col_idx).value
+            if val is not None:
+                lineas_val = str(val).splitlines()
+                val_str = lineas_val[0] if lineas_val else ""
+                if len(val_str) > max_len:
+                    max_len = len(val_str)
+        ws.column_dimensions[col_letter].width = min(max_len + 4, 42)
+
+
+def _enriquecer_con_paciente(
+    df_datos: pd.DataFrame, df_pac: pd.DataFrame
+) -> pd.DataFrame:
+    """Añade NHC, Nombre, Apellidos, Edad, Sexo y Talla al inicio de un DataFrame."""
+    if df_datos.empty or df_pac.empty or "paciente_id" not in df_datos.columns:
+        return df_datos
+    cols_pac = [
+        c
+        for c in ["id", "nhc", "nombre", "apellidos", "iniciales_o_nombre", "edad", "sexo", "talla_cm"]
+        if c in df_pac.columns
+    ]
+    df_p_sub = df_pac[cols_pac].rename(columns={"id": "paciente_id"})
+    df_merged = df_datos.merge(df_p_sub, on="paciente_id", how="left")
+
+    cols_ident = [
+        c
+        for c in ["nhc", "apellidos", "nombre", "iniciales_o_nombre", "edad", "sexo", "talla_cm"]
+        if c in df_merged.columns
+    ]
+    otras_cols = [c for c in df_merged.columns if c not in cols_ident]
+    return df_merged[cols_ident + otras_cols]
+
+
+def generar_excel_completo(
+    all_pac: List[Dict[str, Any]],
+    all_vis: List[Dict[str, Any]],
+    all_ana: List[Dict[str, Any]],
+) -> bytes:
+    """
+    Genera un archivo Excel (.xlsx) en memoria con 4 hojas estructuradas:
+    1. Visitas_Completas (visitas + datos demográficos del paciente)
+    2. Analiticas (resultados analíticos + datos del paciente)
+    3. Resumen_Por_Paciente (1 fila por paciente con su última visita y última analítica)
+    4. Pacientes (maestro de pacientes)
+    """
+    df_p = pd.DataFrame(all_pac) if all_pac else pd.DataFrame(columns=["id", "nhc", "nombre", "apellidos", "edad", "sexo", "talla_cm"])
+    df_v = pd.DataFrame(all_vis) if all_vis else pd.DataFrame(columns=["id", "paciente_id", "fecha_visita"])
+    df_a = pd.DataFrame(all_ana) if all_ana else pd.DataFrame(columns=["id", "paciente_id", "fecha_analitica"])
+
+    # Ordenar fechas de forma descendente si existen
+    if not df_v.empty and "fecha_visita" in df_v.columns:
+        sort_v = [c for c in ["fecha_visita", "created_at"] if c in df_v.columns]
+        df_v = df_v.sort_values(by=sort_v, ascending=False)
+    if not df_a.empty and "fecha_analitica" in df_a.columns:
+        sort_a = [c for c in ["fecha_analitica", "created_at"] if c in df_a.columns]
+        df_a = df_a.sort_values(by=sort_a, ascending=False)
+
+    # Hoja 1: Visitas enriquecidas
+    df_vis_enr = _enriquecer_con_paciente(df_v, df_p)
+
+    # Hoja 2: Analíticas enriquecidas (poniendo texto_bruto al final si existe)
+    df_ana_enr = _enriquecer_con_paciente(df_a, df_p)
+    if "texto_bruto" in df_ana_enr.columns:
+        cols_sin_bruto = [c for c in df_ana_enr.columns if c != "texto_bruto"]
+        df_ana_enr = df_ana_enr[cols_sin_bruto + ["texto_bruto"]]
+
+    # Hoja 3: Resumen 1 fila por paciente (datos paciente + última visita + última analítica)
+    df_resumen = df_p.copy()
+    if not df_resumen.empty and "id" in df_resumen.columns:
+        if not df_v.empty and "paciente_id" in df_v.columns:
+            df_v_ult = df_v.drop_duplicates(subset=["paciente_id"], keep="first").copy()
+            df_v_ult = df_v_ult.drop(columns=[c for c in ["id", "created_at"] if c in df_v_ult.columns])
+            df_resumen = df_resumen.merge(
+                df_v_ult, left_on="id", right_on="paciente_id", how="left", suffixes=("", "_visita")
+            )
+            if "paciente_id" in df_resumen.columns:
+                df_resumen = df_resumen.drop(columns=["paciente_id"])
+
+        if not df_a.empty and "paciente_id" in df_a.columns:
+            df_a_ult = df_a.drop_duplicates(subset=["paciente_id"], keep="first").copy()
+            cols_drop_a = [c for c in ["id", "created_at", "texto_bruto"] if c in df_a_ult.columns]
+            df_a_ult = df_a_ult.drop(columns=cols_drop_a)
+            df_a_ult = df_a_ult.rename(
+                columns={
+                    c: f"ult_ana_{c}"
+                    for c in df_a_ult.columns
+                    if c != "paciente_id"
+                }
+            )
+            df_resumen = df_resumen.merge(
+                df_a_ult, left_on="id", right_on="paciente_id", how="left"
+            )
+            if "paciente_id" in df_resumen.columns:
+                df_resumen = df_resumen.drop(columns=["paciente_id"])
+
+    buffer = BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        hojas = [
+            ("Visitas_Completas", _limpiar_df_para_excel(df_vis_enr)),
+            ("Analiticas", _limpiar_df_para_excel(df_ana_enr)),
+            ("Resumen_Por_Paciente", _limpiar_df_para_excel(df_resumen)),
+            ("Pacientes", _limpiar_df_para_excel(df_p)),
+        ]
+        for nombre_hoja, df_hoja in hojas:
+            df_hoja.to_excel(writer, sheet_name=nombre_hoja, index=False)
+            _estilizar_hoja_excel(writer.sheets[nombre_hoja])
+
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
+def obtener_todos_los_datos_uic(
+    supabase: Any,
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Descarga todos los registros de pacientes, visitas y analíticas desde Supabase."""
+    all_pac = supabase.table("pacientes").select("*").execute().data or []
+    all_vis = (
+        supabase.table("visitas_uic")
+        .select("*")
+        .order("fecha_visita", desc=True)
+        .execute()
+        .data
+        or []
+    )
+    try:
+        all_ana = (
+            supabase.table("analiticas_uic")
+            .select("*")
+            .order("fecha_analitica", desc=True)
+            .execute()
+            .data
+            or []
+        )
+    except Exception:
+        all_ana = []
+    return all_pac, all_vis, all_ana
+
+
+# -----------------------------------------------------------------------------
 # INTERFAZ PRINCIPAL
 # -----------------------------------------------------------------------------
 def main() -> None:
@@ -1381,16 +1568,6 @@ def main() -> None:
 
     if not check_password():
         return
-
-    # Cabecera superior con botón de cierre de sesión
-    col_title, col_logout = st.columns([6, 1])
-    with col_title:
-        st.title("🫀 Consulta de Enfermería — Unidad de Insuficiencia Cardíaca (HGUV)")
-    with col_logout:
-        st.write("")
-        if st.button("Cerrar sesión", use_container_width=True):
-            st.session_state.clear()
-            st.rerun()
 
     # Inicializar cliente Supabase
     try:
@@ -1400,6 +1577,43 @@ def main() -> None:
             f"Error al inicializar el cliente de Supabase. Verifique `.streamlit/secrets.toml`: {exc}"
         )
         return
+
+    # Cabecera superior con exportación rápida a Excel y botón de cierre de sesión
+    col_title, col_export_top, col_logout = st.columns([5.2, 1.5, 1.1])
+    with col_title:
+        st.title("🫀 Consulta de Enfermería — Unidad de Insuficiencia Cardíaca (HGUV)")
+    with col_export_top:
+        st.write("")
+        if st.button("📥 Preparar Excel", use_container_width=True, help="Prepara el Excel completo con todos los datos guardados hasta ahora"):
+            try:
+                p_all, v_all, a_all = obtener_todos_los_datos_uic(supabase)
+                st.session_state["excel_global_bytes"] = generar_excel_completo(
+                    p_all, v_all, a_all
+                )
+                st.session_state["excel_global_nombre"] = (
+                    f"UIC_HGUV_Base_Completa_{date.today().isoformat()}.xlsx"
+                )
+            except Exception as exc:
+                st.error(f"Error al generar Excel: {exc}")
+    with col_logout:
+        st.write("")
+        if st.button("Cerrar sesión", use_container_width=True):
+            st.session_state.clear()
+            st.rerun()
+
+    if st.session_state.get("excel_global_bytes"):
+        st.download_button(
+            label="⬇️ Descargar ahora el Excel completo (.xlsx)",
+            data=st.session_state["excel_global_bytes"],
+            file_name=st.session_state.get(
+                "excel_global_nombre",
+                f"UIC_HGUV_Base_Completa_{date.today().isoformat()}.xlsx",
+            ),
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            type="primary",
+            use_container_width=True,
+            key="dl_excel_top",
+        )
 
     st.divider()
 
@@ -3186,6 +3400,19 @@ def main() -> None:
                         hide_index=True,
                     )
 
+                st.markdown("---")
+                excel_pac_bytes = generar_excel_completo(
+                    [paciente_actual], visitas_hist, analiticas_hist
+                )
+                st.download_button(
+                    label=f"📥 Descargar Excel de este paciente ({paciente_actual.get('nhc', 'paciente')}.xlsx)",
+                    data=excel_pac_bytes,
+                    file_name=f"UIC_Paciente_{paciente_actual.get('nhc', 'ficha')}_{date.today().isoformat()}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True,
+                    key="dl_excel_paciente",
+                )
+
     # =========================================================================
     # PESTAÑA 5: CUADRO DE MANDOS / DASHBOARD GLOBAL DE LA UNIDAD DE IC
     # =========================================================================
@@ -3193,23 +3420,7 @@ def main() -> None:
         st.subheader("📊 Cuadro de Mandos Integral — Unidad de Insuficiencia Cardíaca")
 
         try:
-            all_pac = supabase.table("pacientes").select("*").execute().data or []
-            all_vis = (
-                supabase.table("visitas_uic")
-                .select("*")
-                .order("fecha_visita", desc=True)
-                .execute()
-                .data
-                or []
-            )
-            all_ana = (
-                supabase.table("analiticas_uic")
-                .select("*")
-                .order("fecha_analitica", desc=True)
-                .execute()
-                .data
-                or []
-            )
+            all_pac, all_vis, all_ana = obtener_todos_los_datos_uic(supabase)
         except Exception as exc:
             st.error(f"Error al cargar datos del Cuadro de Mandos: {exc}")
             all_pac, all_vis, all_ana = [], [], []
@@ -3219,6 +3430,26 @@ def main() -> None:
                 "Todavía no hay pacientes ni visitas registradas en la base de datos para mostrar estadísticas."
             )
         else:
+            excel_completo_bytes = generar_excel_completo(all_pac, all_vis, all_ana)
+            col_exp_info, col_exp_btn = st.columns([3, 2])
+            with col_exp_info:
+                st.info(
+                    f"📦 **Exportación Excel lista:** {len(all_pac)} pacientes, "
+                    f"{len(all_vis)} visitas y {len(all_ana)} analíticas "
+                    "(4 pestañas: *Visitas_Completas*, *Analiticas*, *Resumen_Por_Paciente* y *Pacientes*)."
+                )
+            with col_exp_btn:
+                st.write("")
+                st.download_button(
+                    label="📥 Descargar Excel Completo (.xlsx)",
+                    data=excel_completo_bytes,
+                    file_name=f"UIC_HGUV_Base_Completa_{date.today().isoformat()}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    type="primary",
+                    use_container_width=True,
+                    key="dl_excel_dashboard",
+                )
+
             df_p = pd.DataFrame(all_pac) if all_pac else pd.DataFrame()
             df_v = pd.DataFrame(all_vis) if all_vis else pd.DataFrame()
 
