@@ -802,6 +802,38 @@ def buscar_paciente_por_nhc(supabase: Any, nhc: str) -> Optional[Dict[str, Any]]
     return None
 
 
+def _normalizar_talla_cm(talla_cm: Optional[float]) -> Optional[float]:
+    """Convierte 0 o None en None (pendiente de tallar), o redondea talla válida."""
+    if talla_cm is None or float(talla_cm) <= 0:
+        return None
+    val = float(talla_cm)
+    return int(round(val)) if val.is_integer() else round(val, 1)
+
+
+def recalcular_imc_visitas_paciente(
+    supabase: Any, paciente_id: Any, talla_cm: Optional[float]
+) -> None:
+    """
+    Recalcula y actualiza el IMC de todas las visitas previas del paciente en Supabase
+    cuando se introduce o corrige su talla real.
+    """
+    talla_norm = _normalizar_talla_cm(talla_cm)
+    visitas = obtener_visitas_paciente(supabase, paciente_id)
+    if not visitas:
+        return
+    altura_m = (float(talla_norm) / 100.0) if talla_norm and talla_norm > 0 else None
+    for v in visitas:
+        peso = v.get("peso_kg")
+        if peso is not None:
+            nuevo_imc = (
+                round(float(peso) / (altura_m**2), 2) if altura_m is not None else None
+            )
+            if v.get("imc") != nuevo_imc:
+                supabase.table("visitas_uic").update({"imc": nuevo_imc}).eq(
+                    "id", v["id"]
+                ).execute()
+
+
 def crear_paciente(
     supabase: Any,
     nhc: str,
@@ -809,14 +841,10 @@ def crear_paciente(
     apellidos: str,
     edad: int,
     sexo: str,
-    talla_cm: float,
+    talla_cm: Optional[float],
 ) -> Dict[str, Any]:
-    """Crea un nuevo paciente en la tabla 'pacientes' con Nombre, Apellidos, Edad, Sexo y Talla."""
-    talla_val = (
-        int(round(talla_cm))
-        if float(talla_cm).is_integer()
-        else round(float(talla_cm), 1)
-    )
+    """Crea un nuevo paciente en la tabla 'pacientes' con Nombre, Apellidos, Edad, Sexo y Talla (opcional)."""
+    talla_val = _normalizar_talla_cm(talla_cm)
     nombre_limpio = nombre.strip()
     apellidos_limpios = apellidos.strip()
     nombre_completo = (
@@ -844,15 +872,12 @@ def actualizar_datos_paciente(
     apellidos: str,
     edad: int,
     sexo: str,
-    nueva_talla_cm: float,
+    nueva_talla_cm: Optional[float],
     nhc: Optional[str] = None,
+    recalcular_imc: bool = True,
 ) -> Dict[str, Any]:
-    """Actualiza los datos identificativos, demográficos y talla del paciente."""
-    talla_val = (
-        int(round(nueva_talla_cm))
-        if float(nueva_talla_cm).is_integer()
-        else round(float(nueva_talla_cm), 1)
-    )
+    """Actualiza los datos identificativos, demográficos y talla del paciente (y recalcula IMC si procede)."""
+    talla_val = _normalizar_talla_cm(nueva_talla_cm)
     nombre_limpio = nombre.strip()
     apellidos_limpios = apellidos.strip()
     nombre_completo = (
@@ -877,6 +902,8 @@ def actualizar_datos_paciente(
         .eq("id", paciente_id)
         .execute()
     )
+    if recalcular_imc:
+        recalcular_imc_visitas_paciente(supabase, paciente_id, talla_val)
     return res.data[0] if res.data else payload
 
 
@@ -952,7 +979,8 @@ def cargar_estado_paciente(
     st.session_state["pre_medicacion_habitual"] = med_previa
     st.session_state["trat_cardio_edit"] = trat_cardio_prev
     st.session_state["trat_nocardio_edit"] = trat_nocardio_prev
-    st.session_state["talla_editable_cm"] = float(paciente.get("talla_cm") or 165.0)
+    talla_p = paciente.get("talla_cm")
+    st.session_state["talla_editable_cm"] = float(talla_p) if (talla_p and float(talla_p) > 0) else 0.0
     st.session_state["borrador_analitica"] = None
     st.session_state["texto_pre_consulta"] = None
     st.session_state["texto_post_consulta"] = None
@@ -1095,7 +1123,7 @@ def construir_linea_analitica_para_consulta(
 def generar_texto_consulta_enfermeria(
     paciente: Dict[str, Any],
     datos_visita: Dict[str, Any],
-    talla_cm: float,
+    talla_cm: Optional[float],
     resumen_incidencias_str: str,
     analiticas_paciente: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
@@ -1198,6 +1226,17 @@ def generar_texto_consulta_enfermeria(
 
     notas_post = (datos_visita.get("notas_post_consulta") or "").strip()
 
+    talla_str = (
+        f"{float(talla_cm):g} cm"
+        if (talla_cm is not None and float(talla_cm) > 0)
+        else "Pendiente de tallar"
+    )
+    imc_str = (
+        f"{float(imc):.2f} kg/m2"
+        if (imc is not None)
+        else "Pendiente (sin talla)"
+    )
+
     lineas = [
         f"CONSULTA DE ENFERMERÍA - UNIDAD DE INSUFICIENCIA CARDÍACA ({fecha_str})",
         f"Paciente: {nombre_completo}{demog_str} | NHC: {nhc}",
@@ -1205,7 +1244,7 @@ def generar_texto_consulta_enfermeria(
         f"- Incidencias desde última visita: {resumen_incidencias_str}",
         f"- Situación Funcional: Clase funcional NYHA {datos_visita.get('clase_funcional_nyha', '-')}",
         f"- Control Domiciliario: {texto_dom}",
-        f"- Antropometría en Consulta: Peso actual {peso:.1f} kg ({dif_str}) | Talla: {talla_cm:g} cm | IMC: {imc:.2f} kg/m2",
+        f"- Antropometría en Consulta: Peso actual {peso:.1f} kg ({dif_str}) | Talla: {talla_str} | IMC: {imc_str}",
         f"- Constantes en Consulta: TA {tas_con}/{tad_con} mmHg | FC {fc_con} lpm",
         f"- Actuaciones / Técnicas de Enfermería: {texto_actuaciones}",
     ]
@@ -1711,11 +1750,12 @@ def main() -> None:
                 )
             with c_talla:
                 talla_cm_nuevo = st.number_input(
-                    "Talla (cm) *",
-                    min_value=100.0,
+                    "Talla (cm) — 0 si aún no la sabe",
+                    min_value=0.0,
                     max_value=230.0,
-                    value=165.0,
+                    value=0.0,
                     step=1.0,
+                    help="Si no conoce la talla ahora, déjelo en 0 (Pendiente de tallar). Podrá introducirla en cualquier momento después.",
                 )
 
             crear_btn = st.form_submit_button(
@@ -1727,6 +1767,10 @@ def main() -> None:
             if crear_btn:
                 if not nombre_nuevo.strip() or not apellidos_nuevo.strip():
                     st.error("Por favor, indique el Nombre y los Apellidos del paciente.")
+                elif 0 < talla_cm_nuevo < 100:
+                    st.error(
+                        "Si introduce una talla, debe estar entre 100 y 230 cm (o déjelo en 0 si aún no la sabe)."
+                    )
                 else:
                     try:
                         nuevo_pac = crear_paciente(
@@ -1736,7 +1780,7 @@ def main() -> None:
                             apellidos=apellidos_nuevo,
                             edad=int(edad_nueva),
                             sexo=sexo_nuevo,
-                            talla_cm=talla_cm_nuevo,
+                            talla_cm=talla_cm_nuevo if talla_cm_nuevo >= 100 else None,
                         )
                         cargar_estado_paciente(nuevo_pac, [], [])
                         st.success(
@@ -1784,7 +1828,16 @@ def main() -> None:
         edad_guardada = paciente_actual.get("edad") or "-"
         sexo_guardado = paciente_actual.get("sexo") or "-"
         talla_guardada = paciente_actual.get("talla_cm")
-        talla_guardada_str = f"{talla_guardada} cm" if talla_guardada else "No registrada"
+        talla_guardada_num = (
+            float(talla_guardada)
+            if (talla_guardada is not None and float(talla_guardada) > 0)
+            else 0.0
+        )
+        talla_guardada_str = (
+            f"{talla_guardada_num:g} cm"
+            if talla_guardada_num > 0
+            else "⚠️ Pendiente de tallar"
+        )
 
         st.info(
             f"👤 **Paciente:** {nombre_mostrar} | **NHC:** `{paciente_actual.get('nhc')}` | "
@@ -1797,73 +1850,76 @@ def main() -> None:
         )
 
         with st.expander("✏️ Editar datos demográficos o talla del paciente"):
-            ec1, ec2, ec3, ec4, ec5 = st.columns([2, 2, 1, 1, 1])
-            with ec1:
-                edit_nombre = st.text_input(
-                    "Nombre",
-                    value=paciente_actual.get("nombre")
-                    or paciente_actual.get("iniciales_o_nombre")
-                    or "",
-                    key="edit_pac_nombre",
-                )
-            with ec2:
-                edit_apellidos = st.text_input(
-                    "Apellidos",
-                    value=paciente_actual.get("apellidos") or "",
-                    key="edit_pac_apellidos",
-                )
-            with ec3:
-                edit_edad = st.number_input(
-                    "Edad",
-                    min_value=15,
-                    max_value=115,
-                    value=int(paciente_actual.get("edad") or 70),
-                    step=1,
-                    key="edit_pac_edad",
-                )
-            with ec4:
-                opciones_sexo = ["Hombre", "Mujer", "Otro"]
-                idx_sexo = (
-                    opciones_sexo.index(paciente_actual.get("sexo"))
-                    if paciente_actual.get("sexo") in opciones_sexo
-                    else 0
-                )
-                edit_sexo = st.selectbox(
-                    "Sexo", options=opciones_sexo, index=idx_sexo, key="edit_pac_sexo"
-                )
-            with ec5:
-                talla_actual_cm = st.number_input(
-                    "Talla (cm)",
-                    min_value=100.0,
-                    max_value=230.0,
-                    value=float(
-                        st.session_state.get(
-                            "talla_editable_cm", talla_guardada or 165.0
-                        )
-                    ),
-                    step=1.0,
-                    key="input_talla_paciente",
-                )
-                st.session_state["talla_editable_cm"] = talla_actual_cm
-
-            if st.button("Guardar cambios del paciente"):
-                try:
-                    pac_act = actualizar_datos_paciente(
-                        supabase,
-                        paciente_id=paciente_actual["id"],
-                        nombre=edit_nombre,
-                        apellidos=edit_apellidos,
-                        edad=int(edit_edad),
-                        sexo=edit_sexo,
-                        nueva_talla_cm=talla_actual_cm,
+            with st.form(f"form_edit_demog_{paciente_actual['id']}"):
+                ec1, ec2, ec3, ec4, ec5 = st.columns([2, 2, 1, 1, 1])
+                with ec1:
+                    edit_nombre = st.text_input(
+                        "Nombre",
+                        value=paciente_actual.get("nombre")
+                        or paciente_actual.get("iniciales_o_nombre")
+                        or "",
+                        key="edit_pac_nombre",
                     )
-                    st.session_state["paciente_actual"] = pac_act
-                    st.success("Datos del paciente actualizados correctamente.")
-                    st.rerun()
-                except Exception as exc:
-                    st.error(f"Error al actualizar paciente: {exc}")
+                with ec2:
+                    edit_apellidos = st.text_input(
+                        "Apellidos",
+                        value=paciente_actual.get("apellidos") or "",
+                        key="edit_pac_apellidos",
+                    )
+                with ec3:
+                    edit_edad = st.number_input(
+                        "Edad",
+                        min_value=15,
+                        max_value=115,
+                        value=int(paciente_actual.get("edad") or 70),
+                        step=1,
+                        key="edit_pac_edad",
+                    )
+                with ec4:
+                    opciones_sexo = ["Hombre", "Mujer", "Otro"]
+                    idx_sexo = (
+                        opciones_sexo.index(paciente_actual.get("sexo"))
+                        if paciente_actual.get("sexo") in opciones_sexo
+                        else 0
+                    )
+                    edit_sexo = st.selectbox(
+                        "Sexo", options=opciones_sexo, index=idx_sexo, key="edit_pac_sexo"
+                    )
+                with ec5:
+                    edit_talla = st.number_input(
+                        "Talla (cm, 0=Pend.)",
+                        min_value=0.0,
+                        max_value=230.0,
+                        value=talla_guardada_num,
+                        step=1.0,
+                        key="edit_pac_talla_top",
+                    )
+
+                if st.form_submit_button("💾 Guardar cambios del paciente"):
+                    if 0 < edit_talla < 100:
+                        st.error("Si introduce talla, debe estar entre 100 y 230 cm (o 0 si pendiente).")
+                    else:
+                        try:
+                            pac_act = actualizar_datos_paciente(
+                                supabase,
+                                paciente_id=paciente_actual["id"],
+                                nombre=edit_nombre,
+                                apellidos=edit_apellidos,
+                                edad=int(edit_edad),
+                                sexo=edit_sexo,
+                                nueva_talla_cm=edit_talla,
+                            )
+                            st.session_state["paciente_actual"] = pac_act
+                            st.session_state["talla_editable_cm"] = float(edit_talla)
+                            st.session_state["visitas_paciente"] = obtener_visitas_paciente(
+                                supabase, paciente_actual["id"]
+                            )
+                            st.success("Datos del paciente actualizados (y el IMC recalculado en sus visitas).")
+                            st.rerun()
+                        except Exception as exc:
+                            st.error(f"Error al actualizar paciente: {exc}")
         talla_actual_cm = float(
-            st.session_state.get("talla_editable_cm", talla_guardada or 165.0)
+            st.session_state.get("talla_editable_cm", talla_guardada_num)
         )
 
     st.divider()
@@ -2092,7 +2148,7 @@ def main() -> None:
                 peso_previo_val if peso_previo_val is not None else 70.0
             )
 
-            col_peso, col_dif, col_imc = st.columns(3)
+            col_peso, col_talla_cons, col_dif, col_imc = st.columns(4)
             with col_peso:
                 peso_kg = st.number_input(
                     "Peso actual en consulta (kg)",
@@ -2103,6 +2159,22 @@ def main() -> None:
                     format="%.1f",
                 )
 
+            with col_talla_cons:
+                talla_actual_cm = float(
+                    st.number_input(
+                        "Talla (cm) — 0 = Pendiente",
+                        min_value=0.0,
+                        max_value=230.0,
+                        value=float(
+                            st.session_state.get("talla_editable_cm", talla_guardada_num)
+                        ),
+                        step=1.0,
+                        key=f"talla_consulta_{paciente_actual['id']}",
+                        help="Puede modificar o añadir la talla aquí en cualquier momento (aunque ya haya guardado la visita).",
+                    )
+                )
+                st.session_state["talla_editable_cm"] = talla_actual_cm
+
             if peso_previo_val is not None:
                 diferencia_peso_kg: Optional[float] = round(
                     peso_kg - peso_previo_val, 2
@@ -2110,8 +2182,11 @@ def main() -> None:
             else:
                 diferencia_peso_kg = None
 
-            altura_m = talla_actual_cm / 100.0 if talla_actual_cm > 0 else 1.65
-            imc_calculado = round(peso_kg / (altura_m**2), 2)
+            if talla_actual_cm >= 100:
+                altura_m = talla_actual_cm / 100.0
+                imc_calculado: Optional[float] = round(peso_kg / (altura_m**2), 2)
+            else:
+                imc_calculado = None
 
             with col_dif:
                 if diferencia_peso_kg is not None:
@@ -2131,12 +2206,60 @@ def main() -> None:
                     )
 
             with col_imc:
-                st.metric(
-                    label="IMC calculado",
-                    value=f"{imc_calculado:.2f} kg/m²",
-                    delta=f"Talla: {talla_actual_cm:g} cm",
-                    delta_color="off",
+                if imc_calculado is not None:
+                    st.metric(
+                        label="IMC calculado",
+                        value=f"{imc_calculado:.2f} kg/m²",
+                        delta=f"Talla: {talla_actual_cm:g} cm",
+                        delta_color="off",
+                    )
+                else:
+                    st.metric(
+                        label="IMC calculado",
+                        value="Pendiente",
+                        delta="Sin talla (0 cm)",
+                        delta_color="off",
+                    )
+
+            if 0 < talla_actual_cm < 100:
+                st.warning(
+                    "⚠️ Si introduce una talla, debe ser de al menos 100 cm (o déjela en 0 si está pendiente)."
                 )
+            elif talla_actual_cm <= 0:
+                st.warning(
+                    "📏 **Talla pendiente de registrar:** Cuando la tenga, introdúzcala aquí arriba y pulse **Guardar talla y recalcular IMC** (no usaremos 165 cm falsos)."
+                )
+            elif abs(talla_actual_cm - talla_guardada_num) >= 0.1:
+                if st.button(
+                    f"📏 Guardar nueva talla ({talla_actual_cm:g} cm) en ficha y recalcular IMC de visitas ya guardadas",
+                    use_container_width=True,
+                    key=f"btn_sync_talla_{paciente_actual['id']}",
+                ):
+                    try:
+                        pac_act = actualizar_datos_paciente(
+                            supabase,
+                            paciente_id=paciente_actual["id"],
+                            nombre=str(
+                                paciente_actual.get("nombre")
+                                or paciente_actual.get("iniciales_o_nombre")
+                                or ""
+                            ),
+                            apellidos=str(paciente_actual.get("apellidos") or ""),
+                            edad=int(paciente_actual.get("edad") or 70),
+                            sexo=str(paciente_actual.get("sexo") or "Hombre"),
+                            nueva_talla_cm=talla_actual_cm,
+                            recalcular_imc=True,
+                        )
+                        st.session_state["paciente_actual"] = pac_act
+                        st.session_state["visitas_paciente"] = obtener_visitas_paciente(
+                            supabase, paciente_actual["id"]
+                        )
+                        st.success(
+                            f"✅ Talla actualizada a {talla_actual_cm:g} cm y el IMC recalculado en todas las visitas guardadas."
+                        )
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(f"Error al actualizar la talla: {exc}")
 
             if diferencia_peso_kg is not None and diferencia_peso_kg >= 2.0:
                 st.error("ALERTA CLÍNICA: Ganancia ponderal >= 2 kg")
@@ -2633,7 +2756,7 @@ def main() -> None:
                     if diferencia_peso_kg is not None
                     else 0.0
                 ),
-                "imc": float(imc_calculado),
+                "imc": float(imc_calculado) if imc_calculado is not None else None,
                 "tas_consulta": int(tas_consulta),
                 "tad_consulta": int(tad_consulta),
                 "fc_consulta": int(fc_consulta),
@@ -2710,17 +2833,38 @@ def main() -> None:
             )
 
             if guardar_pre_btn:
-                try:
-                    supabase.table("visitas_uic").insert(payload_visita).execute()
+                if 0 < talla_actual_cm < 100:
+                    st.error("Si introduce talla, debe estar entre 100 y 230 cm (o déjela en 0 si aún está pendiente).")
+                else:
+                    try:
+                        # Si se modificó la talla (o se añadió por primera vez), guardarla también en ficha y recalcular IMC previo
+                        if abs(talla_actual_cm - talla_guardada_num) >= 0.1:
+                            pac_act = actualizar_datos_paciente(
+                                supabase,
+                                paciente_id=paciente_actual["id"],
+                                nombre=str(
+                                    paciente_actual.get("nombre")
+                                    or paciente_actual.get("iniciales_o_nombre")
+                                    or ""
+                                ),
+                                apellidos=str(paciente_actual.get("apellidos") or ""),
+                                edad=int(paciente_actual.get("edad") or 70),
+                                sexo=str(paciente_actual.get("sexo") or "Hombre"),
+                                nueva_talla_cm=talla_actual_cm,
+                                recalcular_imc=True,
+                            )
+                            st.session_state["paciente_actual"] = pac_act
 
-                    visitas_actualizadas = obtener_visitas_paciente(
-                        supabase, paciente_actual["id"]
-                    )
-                    st.session_state["visitas_paciente"] = visitas_actualizadas
-                    st.session_state["texto_pre_consulta"] = texto_hc_en_vivo
-                    st.success("✅ Consulta guardada correctamente en Supabase.")
-                except Exception as exc:
-                    st.error(f"Error al guardar la consulta: {exc}")
+                        supabase.table("visitas_uic").insert(payload_visita).execute()
+
+                        visitas_actualizadas = obtener_visitas_paciente(
+                            supabase, paciente_actual["id"]
+                        )
+                        st.session_state["visitas_paciente"] = visitas_actualizadas
+                        st.session_state["texto_pre_consulta"] = texto_hc_en_vivo
+                        st.success("✅ Consulta guardada correctamente en Supabase.")
+                    except Exception as exc:
+                        st.error(f"Error al guardar la consulta: {exc}")
 
             st.markdown("---")
             mostrar_cuadro_copia_hc(
@@ -3926,11 +4070,12 @@ def main() -> None:
                         )
                         dir_sexo = st.selectbox("Sexo", options=ops_sx, index=idx_sx)
                     with fe6:
+                        talla_dir_val = pac_sel.get("talla_cm")
                         dir_talla = st.number_input(
-                            "Talla (cm)",
-                            min_value=100.0,
+                            "Talla (cm, 0=Pend.)",
+                            min_value=0.0,
                             max_value=230.0,
-                            value=float(pac_sel.get("talla_cm") or 165.0),
+                            value=float(talla_dir_val) if (talla_dir_val and float(talla_dir_val) > 0) else 0.0,
                             step=1.0,
                         )
 
@@ -3940,6 +4085,8 @@ def main() -> None:
                     if guardar_dir_btn:
                         if not dir_nhc.strip() or not dir_nombre.strip():
                             st.error("El NHC y el Nombre son obligatorios.")
+                        elif 0 < dir_talla < 100:
+                            st.error("Si introduce talla, debe estar entre 100 y 230 cm (o 0 si pendiente).")
                         else:
                             try:
                                 pac_actualizado = actualizar_datos_paciente(
@@ -3951,6 +4098,7 @@ def main() -> None:
                                     edad=int(dir_edad),
                                     sexo=dir_sexo,
                                     nueva_talla_cm=dir_talla,
+                                    recalcular_imc=True,
                                 )
                                 # Si estaba abierto arriba en consulta, refrescarlo en sesión
                                 if (
@@ -3965,7 +4113,10 @@ def main() -> None:
                                     st.session_state["talla_editable_cm"] = float(
                                         dir_talla
                                     )
-                                st.success("✅ Datos del paciente actualizados correctamente.")
+                                    st.session_state["visitas_paciente"] = obtener_visitas_paciente(
+                                        supabase, pac_sel_id
+                                    )
+                                st.success("✅ Datos del paciente actualizados (y el IMC recalculado en sus visitas).")
                                 st.rerun()
                             except Exception as exc:
                                 st.error(f"Error al actualizar el paciente: {exc}")
