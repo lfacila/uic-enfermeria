@@ -3906,13 +3906,13 @@ def main() -> None:
                     )
 
     # =========================================================================
-    # PESTAÑA 6: LISTADO DE PACIENTES (VER, BUSCAR, ABRIR, EDITAR Y ELIMINAR)
+    # PESTAÑA 6: DIRECTORIO EJECUTIVO DE PACIENTES (SELECCIÓN DIRECTA EN TABLA)
     # =========================================================================
     with tab_pacientes:
-        st.subheader("👥 Listado General de Pacientes Registrados")
+        st.subheader("👥 Directorio Ejecutivo de Pacientes")
         st.caption(
-            "Consulte todos los pacientes dados de alta con su NHC / ID, Nombre y Apellidos. "
-            "Puede abrir cualquier ficha directamente, corregir sus datos o eliminar registros."
+            "Haga clic directamente sobre cualquier fila de la tabla para ver su ficha ejecutiva, "
+            "abrirla en consulta, modificar datos (ej. talla) o eliminar registros."
         )
 
         try:
@@ -3924,234 +3924,396 @@ def main() -> None:
         if not pac_listado:
             st.info("Todavía no hay pacientes registrados en la base de datos.")
         else:
-            # Contar visitas y analíticas por paciente_id
+            # Mapas de última visita, conteo de visitas y analíticas por paciente_id
             conteo_vis: Dict[Any, int] = {}
+            ultima_vis_por_pac: Dict[Any, Dict[str, Any]] = {}
             for v in vis_listado:
                 pid = v.get("paciente_id")
                 conteo_vis[pid] = conteo_vis.get(pid, 0) + 1
+                if pid not in ultima_vis_por_pac:
+                    ultima_vis_por_pac[pid] = v
 
             conteo_ana: Dict[Any, int] = {}
             for a in ana_listado:
                 pid = a.get("paciente_id")
                 conteo_ana[pid] = conteo_ana.get(pid, 0) + 1
 
-            filas_tabla = []
+            # Construir registros enriquecidos y detectar estados clínicos clave
+            registros_dir: List[Dict[str, Any]] = []
+            n_talla_pendiente = 0
+            n_con_alerta = 0
+
             for p in pac_listado:
                 pid = p.get("id")
-                filas_tabla.append(
+                uv = ultima_vis_por_pac.get(pid)
+                talla_v = p.get("talla_cm")
+                tiene_talla = talla_v is not None and float(talla_v) > 0
+                if not tiene_talla:
+                    n_talla_pendiente += 1
+
+                alerta_flags: List[str] = []
+                if uv:
+                    dif_p = uv.get("diferencia_peso_kg")
+                    if dif_p is not None and float(dif_p) >= 2.0:
+                        alerta_flags.append(f"+{float(dif_p):.1f} kg")
+                    if uv.get("clase_funcional_nyha") in ("III", "IV"):
+                        alerta_flags.append(f"NYHA {uv.get('clase_funcional_nyha')}")
+                    if uv.get("incidencias_bool"):
+                        alerta_flags.append("Incidencia")
+                if alerta_flags:
+                    n_con_alerta += 1
+
+                if not tiene_talla:
+                    estado_str = "⚠️ Talla pendiente"
+                elif alerta_flags:
+                    estado_str = "🚨 " + " · ".join(alerta_flags)
+                elif uv:
+                    estado_str = "✅ Seguimiento OK"
+                else:
+                    estado_str = "🆕 Sin visitas"
+
+                peso_ult = (
+                    f"{float(uv['peso_kg']):.1f} kg"
+                    if (uv and uv.get("peso_kg") is not None)
+                    else "—"
+                )
+                ta_ult = (
+                    f"{uv.get('tas_consulta')}/{uv.get('tad_consulta')}"
+                    if (
+                        uv
+                        and uv.get("tas_consulta") is not None
+                        and uv.get("tad_consulta") is not None
+                    )
+                    else "—"
+                )
+                nyha_ult = (
+                    str(uv.get("clase_funcional_nyha"))
+                    if (uv and uv.get("clase_funcional_nyha"))
+                    else "—"
+                )
+                fecha_ult = (
+                    str(uv.get("fecha_visita"))[:10]
+                    if (uv and uv.get("fecha_visita"))
+                    else "Sin visitas"
+                )
+
+                registros_dir.append(
                     {
-                        "NHC": p.get("nhc", ""),
-                        "Apellidos": p.get("apellidos") or "",
-                        "Nombre": p.get("nombre") or p.get("iniciales_o_nombre") or "",
-                        "Edad": p.get("edad"),
-                        "Sexo": p.get("sexo") or "",
-                        "Talla (cm)": p.get("talla_cm"),
-                        "Nº Visitas": conteo_vis.get(pid, 0),
-                        "Nº Analíticas": conteo_ana.get(pid, 0),
-                        "Fecha Alta": str(p.get("fecha_alta") or "")[:10],
-                        "ID (UUID)": str(pid),
+                        "_id": pid,
+                        "_tiene_talla": tiene_talla,
+                        "_tiene_alerta": bool(alerta_flags),
+                        "_sin_visitas": uv is None,
+                        "NHC": str(p.get("nhc") or ""),
+                        "Paciente": obtener_nombre_completo_paciente(p),
+                        "Edad": int(p["edad"]) if p.get("edad") is not None else None,
+                        "Sexo": str(p.get("sexo") or "—"),
+                        "Talla": f"{float(talla_v):g} cm" if tiene_talla else "⚠️ Pendiente",
+                        "Último Peso": peso_ult,
+                        "Última TA": ta_ult,
+                        "NYHA": nyha_ult,
+                        "Última Visita": fecha_ult,
+                        "Visitas": conteo_vis.get(pid, 0),
+                        "Analíticas": conteo_ana.get(pid, 0),
+                        "Estado": estado_str,
                     }
                 )
 
-            df_listado = pd.DataFrame(filas_tabla).sort_values(
-                by=["Apellidos", "Nombre", "NHC"], ascending=True
-            )
+            # 1. Tarjetas ejecutivas superiores (KPIs)
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("👥 Pacientes Totales", len(pac_listado))
+            m2.metric("🩺 Visitas Registradas", len(vis_listado))
+            m3.metric("⚠️ Talla Pendiente", n_talla_pendiente)
+            m4.metric("🚨 Con Alerta Clínica", n_con_alerta)
 
-            col_busq, col_tot = st.columns([3, 1])
+            st.markdown("")
+
+            # 2. Barra de búsqueda y filtros rápidos tipo píldora
+            col_busq, col_f_rapido = st.columns([2.2, 2.8])
             with col_busq:
                 filtro_txt = st.text_input(
-                    "🔎 Filtrar listado por NHC, ID, Nombre o Apellidos",
-                    placeholder="Escriba parte del NHC, nombre, apellidos o ID...",
+                    "🔎 Buscar paciente (NHC, Nombre o Apellidos)",
+                    placeholder="Escriba NHC, nombre o apellidos...",
                     key="filtro_listado_pac",
                 ).strip().lower()
-            with col_tot:
-                st.metric("Total Pacientes", len(df_listado))
+            with col_f_rapido:
+                filtro_estado = st.radio(
+                    "Filtro rápido",
+                    options=[
+                        "Todos",
+                        "⚠️ Talla pendiente",
+                        "🚨 Con alerta",
+                        "🆕 Sin visitas",
+                    ],
+                    horizontal=True,
+                    key="filtro_rapido_pac",
+                )
 
+            df_base = pd.DataFrame(registros_dir).sort_values(
+                by=["Paciente", "NHC"], ascending=True
+            )
+
+            mask = pd.Series(True, index=df_base.index)
             if filtro_txt:
-                mask = (
-                    df_listado["NHC"].astype(str).str.lower().str.contains(filtro_txt, na=False)
-                    | df_listado["Apellidos"].astype(str).str.lower().str.contains(filtro_txt, na=False)
-                    | df_listado["Nombre"].astype(str).str.lower().str.contains(filtro_txt, na=False)
-                    | df_listado["ID (UUID)"].astype(str).str.lower().str.contains(filtro_txt, na=False)
+                mask &= (
+                    df_base["NHC"].str.lower().str.contains(filtro_txt, na=False)
+                    | df_base["Paciente"].str.lower().str.contains(filtro_txt, na=False)
+                    | df_base["_id"].astype(str).str.lower().str.contains(filtro_txt, na=False)
                 )
-                df_filtrado = df_listado[mask]
-            else:
-                df_filtrado = df_listado
+            if filtro_estado == "⚠️ Talla pendiente":
+                mask &= ~df_base["_tiene_talla"]
+            elif filtro_estado == "🚨 Con alerta":
+                mask &= df_base["_tiene_alerta"]
+            elif filtro_estado == "🆕 Sin visitas":
+                mask &= df_base["_sin_visitas"]
 
-            st.dataframe(df_filtrado, use_container_width=True, hide_index=True)
+            df_filtrado = df_base[mask].reset_index(drop=True)
+            ids_ordenados = df_filtrado["_id"].tolist()
+            cols_visibles = [
+                "NHC",
+                "Paciente",
+                "Edad",
+                "Sexo",
+                "Talla",
+                "Último Peso",
+                "Última TA",
+                "NYHA",
+                "Última Visita",
+                "Visitas",
+                "Analíticas",
+                "Estado",
+            ]
 
-            st.markdown("---")
-            st.markdown("#### 🛠️ Gestionar Paciente (Abrir en Consulta / Editar / Eliminar)")
-
-            pac_ordenados = sorted(
-                pac_listado,
-                key=lambda x: (
-                    str(x.get("apellidos") or "").lower(),
-                    str(x.get("nombre") or x.get("iniciales_o_nombre") or "").lower(),
-                    str(x.get("nhc") or "").lower(),
-                ),
-            )
-            mapa_pac_id = {p["id"]: p for p in pac_ordenados}
-            opciones_pac_sel = [p["id"] for p in pac_ordenados]
-
-            pac_sel_id = st.selectbox(
-                "Seleccione el paciente a gestionar",
-                options=opciones_pac_sel,
-                format_func=lambda pid: (
-                    f"NHC: {mapa_pac_id[pid].get('nhc', '-')} | "
-                    f"{obtener_nombre_completo_paciente(mapa_pac_id[pid])} "
-                    f"(ID: {str(pid)[:8]}...)"
-                ),
-                key="select_pac_gestion",
-            )
-
-            pac_sel = mapa_pac_id[pac_sel_id]
-
-            # Botón rápido para cargar este paciente arriba sin tener que teclear el NHC
-            if st.button(
-                f"📂 Abrir a {obtener_nombre_completo_paciente(pac_sel)} (NHC: {pac_sel.get('nhc')}) en Consulta",
-                type="primary",
+            # 3. Tabla interactiva con selección directa de fila (sin desplegable)
+            evento_tabla = st.dataframe(
+                df_filtrado[cols_visibles],
                 use_container_width=True,
-                key=f"btn_cargar_dir_{pac_sel_id}",
-            ):
-                vis_sel = obtener_visitas_paciente(supabase, pac_sel_id)
-                ana_sel = obtener_analiticas_paciente(supabase, pac_sel_id)
-                st.session_state["nhc_buscado"] = str(pac_sel.get("nhc") or "")
-                cargar_estado_paciente(pac_sel, vis_sel, ana_sel)
-                st.success(
-                    f"Paciente {obtener_nombre_completo_paciente(pac_sel)} cargado. "
-                    "Ya puede ir a la Pestaña 1, 2, 3 o 4."
+                hide_index=True,
+                on_select="rerun",
+                selection_mode="single-row",
+                key="tabla_directorio_pacientes",
+                column_config={
+                    "NHC": st.column_config.TextColumn("NHC", width="small"),
+                    "Paciente": st.column_config.TextColumn("Apellidos, Nombre", width="medium"),
+                    "Edad": st.column_config.NumberColumn("Edad", format="%d a", width="small"),
+                    "Visitas": st.column_config.NumberColumn("Vis.", width="small"),
+                    "Analíticas": st.column_config.NumberColumn("Analít.", width="small"),
+                },
+            )
+
+            filas_sel = (
+                evento_tabla.selection.rows
+                if (evento_tabla and hasattr(evento_tabla, "selection"))
+                else []
+            )
+
+            if not filas_sel or filas_sel[0] >= len(ids_ordenados):
+                st.info(
+                    "👆 **Haga clic directamente en la casilla izquierda de cualquier fila de la tabla** "
+                    "para abrir la ficha ejecutiva del paciente (cargar en consulta, editar talla/datos o eliminar)."
                 )
-                st.rerun()
+            else:
+                pac_sel_id = ids_ordenados[filas_sel[0]]
+                mapa_pac_id = {p["id"]: p for p in pac_listado}
+                pac_sel = mapa_pac_id[pac_sel_id]
+                uv_sel = ultima_vis_por_pac.get(pac_sel_id)
+                talla_sel_val = pac_sel.get("talla_cm")
+                talla_sel_num = (
+                    float(talla_sel_val)
+                    if (talla_sel_val is not None and float(talla_sel_val) > 0)
+                    else 0.0
+                )
 
-            col_edit_box, col_del_box = st.columns([2, 1])
-
-            # Formulario de Edición
-            with col_edit_box:
-                with st.form(f"form_editar_dir_{pac_sel_id}"):
-                    st.markdown("##### ✏️ Editar Datos del Paciente")
-                    st.caption(f"ID interno (UUID): `{pac_sel_id}`")
-                    fe1, fe2, fe3 = st.columns(3)
-                    with fe1:
-                        dir_nhc = st.text_input(
-                            "NHC *",
-                            value=str(pac_sel.get("nhc") or ""),
+                # 4. Tarjeta Ejecutiva Contextual del paciente seleccionado
+                with st.container(border=True):
+                    c_head_info, c_head_btn = st.columns([3, 1.5])
+                    with c_head_info:
+                        st.markdown(
+                            f"### 👤 {obtener_nombre_completo_paciente(pac_sel)}"
                         )
-                    with fe2:
-                        dir_nombre = st.text_input(
-                            "Nombre *",
-                            value=str(
-                                pac_sel.get("nombre")
-                                or pac_sel.get("iniciales_o_nombre")
-                                or ""
-                            ),
+                        talla_badge = (
+                            f"{talla_sel_num:g} cm"
+                            if talla_sel_num > 0
+                            else "⚠️ Pendiente de tallar"
                         )
-                    with fe3:
-                        dir_apellidos = st.text_input(
-                            "Apellidos *",
-                            value=str(pac_sel.get("apellidos") or ""),
+                        st.markdown(
+                            f"**NHC:** `{pac_sel.get('nhc', '-')}` · "
+                            f"**Edad:** {pac_sel.get('edad') or '-'} años · "
+                            f"**Sexo:** {pac_sel.get('sexo') or '-'} · "
+                            f"**Talla:** {talla_badge}"
                         )
-
-                    fe4, fe5, fe6 = st.columns(3)
-                    with fe4:
-                        dir_edad = st.number_input(
-                            "Edad (años)",
-                            min_value=15,
-                            max_value=115,
-                            value=int(pac_sel.get("edad") or 70),
-                            step=1,
-                        )
-                    with fe5:
-                        ops_sx = ["Hombre", "Mujer", "Otro"]
-                        idx_sx = (
-                            ops_sx.index(pac_sel.get("sexo"))
-                            if pac_sel.get("sexo") in ops_sx
-                            else 0
-                        )
-                        dir_sexo = st.selectbox("Sexo", options=ops_sx, index=idx_sx)
-                    with fe6:
-                        talla_dir_val = pac_sel.get("talla_cm")
-                        dir_talla = st.number_input(
-                            "Talla (cm, 0=Pend.)",
-                            min_value=0.0,
-                            max_value=230.0,
-                            value=float(talla_dir_val) if (talla_dir_val and float(talla_dir_val) > 0) else 0.0,
-                            step=1.0,
-                        )
-
-                    guardar_dir_btn = st.form_submit_button(
-                        "💾 Guardar Cambios del Paciente", use_container_width=True
-                    )
-                    if guardar_dir_btn:
-                        if not dir_nhc.strip() or not dir_nombre.strip():
-                            st.error("El NHC y el Nombre son obligatorios.")
-                        elif 0 < dir_talla < 100:
-                            st.error("Si introduce talla, debe estar entre 100 y 230 cm (o 0 si pendiente).")
+                        if uv_sel:
+                            st.caption(
+                                f"Última visita: {str(uv_sel.get('fecha_visita'))[:10]} | "
+                                f"Peso: {uv_sel.get('peso_kg', '-')} kg | "
+                                f"IMC: {uv_sel.get('imc') or 'Pendiente'} | "
+                                f"TA: {uv_sel.get('tas_consulta', '-')}/{uv_sel.get('tad_consulta', '-')} mmHg | "
+                                f"NYHA: {uv_sel.get('clase_funcional_nyha', '-')} | "
+                                f"ID: {pac_sel_id}"
+                            )
                         else:
-                            try:
-                                pac_actualizado = actualizar_datos_paciente(
-                                    supabase,
-                                    paciente_id=pac_sel_id,
-                                    nhc=dir_nhc,
-                                    nombre=dir_nombre,
-                                    apellidos=dir_apellidos,
-                                    edad=int(dir_edad),
-                                    sexo=dir_sexo,
-                                    nueva_talla_cm=dir_talla,
-                                    recalcular_imc=True,
+                            st.caption(f"Sin visitas registradas aún · ID: {pac_sel_id}")
+
+                    with c_head_btn:
+                        st.write("")
+                        if st.button(
+                            "📂 Abrir en Consulta",
+                            type="primary",
+                            use_container_width=True,
+                            key=f"btn_cargar_dir_{pac_sel_id}",
+                        ):
+                            vis_sel = obtener_visitas_paciente(supabase, pac_sel_id)
+                            ana_sel = obtener_analiticas_paciente(supabase, pac_sel_id)
+                            st.session_state["nhc_buscado"] = str(
+                                pac_sel.get("nhc") or ""
+                            )
+                            cargar_estado_paciente(pac_sel, vis_sel, ana_sel)
+                            st.success(
+                                f"✅ Paciente cargado arriba. Ya puede trabajar en la Pestaña 1, 2, 3 o 4."
+                            )
+                            st.rerun()
+
+                    # Pestañas internas limpias dentro de la tarjeta: Editar o Eliminar
+                    sub_edit, sub_del = st.tabs(
+                        ["✏️ Editar ficha / talla", "🗑️ Eliminar paciente"]
+                    )
+
+                    with sub_edit:
+                        with st.form(f"form_editar_dir_{pac_sel_id}"):
+                            fe1, fe2, fe3 = st.columns(3)
+                            with fe1:
+                                dir_nhc = st.text_input(
+                                    "NHC *",
+                                    value=str(pac_sel.get("nhc") or ""),
                                 )
-                                # Si estaba abierto arriba en consulta, refrescarlo en sesión
+                            with fe2:
+                                dir_nombre = st.text_input(
+                                    "Nombre *",
+                                    value=str(
+                                        pac_sel.get("nombre")
+                                        or pac_sel.get("iniciales_o_nombre")
+                                        or ""
+                                    ),
+                                )
+                            with fe3:
+                                dir_apellidos = st.text_input(
+                                    "Apellidos *",
+                                    value=str(pac_sel.get("apellidos") or ""),
+                                )
+
+                            fe4, fe5, fe6 = st.columns(3)
+                            with fe4:
+                                dir_edad = st.number_input(
+                                    "Edad (años)",
+                                    min_value=15,
+                                    max_value=115,
+                                    value=int(pac_sel.get("edad") or 70),
+                                    step=1,
+                                )
+                            with fe5:
+                                ops_sx = ["Hombre", "Mujer", "Otro"]
+                                idx_sx = (
+                                    ops_sx.index(pac_sel.get("sexo"))
+                                    if pac_sel.get("sexo") in ops_sx
+                                    else 0
+                                )
+                                dir_sexo = st.selectbox(
+                                    "Sexo", options=ops_sx, index=idx_sx
+                                )
+                            with fe6:
+                                dir_talla = st.number_input(
+                                    "Talla (cm, 0 = Pendiente)",
+                                    min_value=0.0,
+                                    max_value=230.0,
+                                    value=talla_sel_num,
+                                    step=1.0,
+                                )
+
+                            if st.form_submit_button(
+                                "💾 Guardar Cambios y Recalcular IMC",
+                                type="primary",
+                                use_container_width=True,
+                            ):
+                                if not dir_nhc.strip() or not dir_nombre.strip():
+                                    st.error("El NHC y el Nombre son obligatorios.")
+                                elif 0 < dir_talla < 100:
+                                    st.error(
+                                        "Si introduce talla, debe estar entre 100 y 230 cm (o 0 si pendiente)."
+                                    )
+                                else:
+                                    try:
+                                        pac_actualizado = actualizar_datos_paciente(
+                                            supabase,
+                                            paciente_id=pac_sel_id,
+                                            nhc=dir_nhc,
+                                            nombre=dir_nombre,
+                                            apellidos=dir_apellidos,
+                                            edad=int(dir_edad),
+                                            sexo=dir_sexo,
+                                            nueva_talla_cm=dir_talla,
+                                            recalcular_imc=True,
+                                        )
+                                        if (
+                                            st.session_state.get("paciente_actual")
+                                            and st.session_state["paciente_actual"].get(
+                                                "id"
+                                            )
+                                            == pac_sel_id
+                                        ):
+                                            st.session_state["paciente_actual"] = (
+                                                pac_actualizado
+                                            )
+                                            st.session_state["nhc_buscado"] = str(
+                                                pac_actualizado.get("nhc")
+                                                or dir_nhc.strip()
+                                            )
+                                            st.session_state["talla_editable_cm"] = (
+                                                float(dir_talla)
+                                            )
+                                            st.session_state["visitas_paciente"] = (
+                                                obtener_visitas_paciente(
+                                                    supabase, pac_sel_id
+                                                )
+                                            )
+                                        st.success(
+                                            "✅ Ficha actualizada y el IMC recalculado en sus visitas."
+                                        )
+                                        st.rerun()
+                                    except Exception as exc:
+                                        st.error(
+                                            f"Error al actualizar el paciente: {exc}"
+                                        )
+
+                    with sub_del:
+                        st.warning(
+                            f"Esta acción eliminará permanentemente a **{obtener_nombre_completo_paciente(pac_sel)}** "
+                            f"(NHC `{pac_sel.get('nhc')}`) junto con **{conteo_vis.get(pac_sel_id, 0)} visitas** y "
+                            f"**{conteo_ana.get(pac_sel_id, 0)} analíticas** asociadas."
+                        )
+                        confirmar_borrado = st.checkbox(
+                            "Confirmo que deseo eliminar este paciente permanentemente",
+                            key=f"chk_del_{pac_sel_id}",
+                        )
+                        if st.button(
+                            "🗑️ Eliminar Definitivamente",
+                            type="primary",
+                            disabled=not confirmar_borrado,
+                            use_container_width=True,
+                            key=f"btn_del_{pac_sel_id}",
+                        ):
+                            try:
+                                eliminar_paciente(supabase, pac_sel_id)
                                 if (
                                     st.session_state.get("paciente_actual")
                                     and st.session_state["paciente_actual"].get("id")
                                     == pac_sel_id
                                 ):
-                                    st.session_state["paciente_actual"] = pac_actualizado
-                                    st.session_state["nhc_buscado"] = str(
-                                        pac_actualizado.get("nhc") or dir_nhc.strip()
-                                    )
-                                    st.session_state["talla_editable_cm"] = float(
-                                        dir_talla
-                                    )
-                                    st.session_state["visitas_paciente"] = obtener_visitas_paciente(
-                                        supabase, pac_sel_id
-                                    )
-                                st.success("✅ Datos del paciente actualizados (y el IMC recalculado en sus visitas).")
+                                    limpiar_paciente_actual()
+                                st.success(
+                                    "Paciente eliminado correctamente de Supabase."
+                                )
                                 st.rerun()
                             except Exception as exc:
-                                st.error(f"Error al actualizar el paciente: {exc}")
-
-            # Panel de Eliminación segura
-            with col_del_box:
-                st.markdown("##### 🗑️ Eliminar Paciente")
-                st.warning(
-                    f"Esta acción borrará definitivamente a **{obtener_nombre_completo_paciente(pac_sel)}** "
-                    f"(NHC `{pac_sel.get('nhc')}`) junto con **{conteo_vis.get(pac_sel_id, 0)} visitas** y "
-                    f"**{conteo_ana.get(pac_sel_id, 0)} analíticas** asociadas."
-                )
-                confirmar_borrado = st.checkbox(
-                    "Confirmo que deseo eliminar este paciente permanentemente",
-                    key=f"chk_del_{pac_sel_id}",
-                )
-                if st.button(
-                    "🗑️ Eliminar Definitivamente",
-                    type="primary",
-                    disabled=not confirmar_borrado,
-                    use_container_width=True,
-                    key=f"btn_del_{pac_sel_id}",
-                ):
-                    try:
-                        eliminar_paciente(supabase, pac_sel_id)
-                        if (
-                            st.session_state.get("paciente_actual")
-                            and st.session_state["paciente_actual"].get("id")
-                            == pac_sel_id
-                        ):
-                            limpiar_paciente_actual()
-                        st.success("Paciente eliminado correctamente de Supabase.")
-                        st.rerun()
-                    except Exception as exc:
-                        st.error(f"Error al eliminar el paciente: {exc}")
+                                st.error(f"Error al eliminar el paciente: {exc}")
 
 
 if __name__ == "__main__":
