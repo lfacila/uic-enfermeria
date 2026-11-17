@@ -912,6 +912,16 @@ def eliminar_paciente(supabase: Any, paciente_id: Any) -> None:
     supabase.table("pacientes").delete().eq("id", paciente_id).execute()
 
 
+def eliminar_visita(supabase: Any, visita_id: Any) -> None:
+    """Elimina una visita concreta de 'visitas_uic' sin borrar al paciente."""
+    supabase.table("visitas_uic").delete().eq("id", visita_id).execute()
+
+
+def eliminar_analitica(supabase: Any, analitica_id: Any) -> None:
+    """Elimina una analítica concreta de 'analiticas_uic' sin borrar al paciente."""
+    supabase.table("analiticas_uic").delete().eq("id", analitica_id).execute()
+
+
 def obtener_visitas_paciente(supabase: Any, paciente_id: Any) -> List[Dict[str, Any]]:
     """Obtiene todas las visitas del paciente ordenadas desde la más reciente."""
     try:
@@ -4172,9 +4182,13 @@ def main() -> None:
                             )
                             st.rerun()
 
-                    # Pestañas internas limpias dentro de la tarjeta: Editar o Eliminar
-                    sub_edit, sub_del = st.tabs(
-                        ["✏️ Editar ficha / talla", "🗑️ Eliminar paciente"]
+                    # Pestañas internas limpias dentro de la tarjeta: Editar, Visitas/Analíticas o Eliminar paciente
+                    sub_edit, sub_visitas, sub_del = st.tabs(
+                        [
+                            "✏️ Editar ficha / talla",
+                            f"🩺 Visitas ({conteo_vis.get(pac_sel_id, 0)}) y Analíticas ({conteo_ana.get(pac_sel_id, 0)})",
+                            "🗑️ Eliminar paciente",
+                        ]
                     )
 
                     with sub_edit:
@@ -4282,6 +4296,183 @@ def main() -> None:
                                         st.error(
                                             f"Error al actualizar el paciente: {exc}"
                                         )
+
+                    with sub_visitas:
+                        vis_pac_sel = [
+                            v for v in vis_listado if v.get("paciente_id") == pac_sel_id
+                        ]
+                        ana_pac_sel = [
+                            a for a in ana_listado if a.get("paciente_id") == pac_sel_id
+                        ]
+
+                        st.markdown("##### 🩺 Visitas registradas de este paciente")
+                        if not vis_pac_sel:
+                            st.info("Este paciente no tiene visitas registradas.")
+                        else:
+                            filas_vis_dir = []
+                            for v in vis_pac_sel:
+                                act_txt = ", ".join(
+                                    construir_lineas_actuaciones_enfermeria(v)
+                                ) or "—"
+                                filas_vis_dir.append(
+                                    {
+                                        "Fecha": str(v.get("fecha_visita") or "")[:10],
+                                        "NYHA": v.get("clase_funcional_nyha") or "—",
+                                        "Peso (kg)": v.get("peso_kg"),
+                                        "IMC": v.get("imc"),
+                                        "TA (mmHg)": (
+                                            f"{v.get('tas_consulta')}/{v.get('tad_consulta')}"
+                                            if (
+                                                v.get("tas_consulta") is not None
+                                                and v.get("tad_consulta") is not None
+                                            )
+                                            else "—"
+                                        ),
+                                        "FC": v.get("fc_consulta"),
+                                        "Incidencias": (
+                                            v.get("detalle_incidencias") or "Sí"
+                                        )
+                                        if v.get("incidencias_bool")
+                                        else "No",
+                                        "Actuaciones": act_txt,
+                                    }
+                                )
+
+                            ev_vis = st.dataframe(
+                                pd.DataFrame(filas_vis_dir),
+                                use_container_width=True,
+                                hide_index=True,
+                                on_select="rerun",
+                                selection_mode="single-row",
+                                key=f"tabla_vis_pac_{pac_sel_id}",
+                            )
+                            vis_rows_sel = (
+                                ev_vis.selection.rows
+                                if (ev_vis and hasattr(ev_vis, "selection"))
+                                else []
+                            )
+                            if not vis_rows_sel or vis_rows_sel[0] >= len(vis_pac_sel):
+                                st.caption(
+                                    "👆 Haga clic en la casilla izquierda de una visita si desea eliminar esa visita concreta (sin borrar al paciente)."
+                                )
+                            else:
+                                v_elegida = vis_pac_sel[vis_rows_sel[0]]
+                                v_id = v_elegida["id"]
+                                st.warning(
+                                    f"Visita seleccionada: **{str(v_elegida.get('fecha_visita'))[:10]}** "
+                                    f"(Peso: {v_elegida.get('peso_kg', '-')} kg | "
+                                    f"TA: {v_elegida.get('tas_consulta', '-')}/{v_elegida.get('tad_consulta', '-')} mmHg | "
+                                    f"NYHA: {v_elegida.get('clase_funcional_nyha', '-')}). "
+                                    "Solo se borrará esta visita; el paciente y el resto de sus visitas se mantendrán intactos."
+                                )
+                                c_chk_v, c_btn_v = st.columns([2, 1.5])
+                                with c_chk_v:
+                                    conf_del_vis = st.checkbox(
+                                        "Confirmo eliminar solo esta visita",
+                                        key=f"chk_del_vis_{v_id}",
+                                    )
+                                with c_btn_v:
+                                    if st.button(
+                                        "🗑️ Eliminar Solo Esta Visita",
+                                        type="primary",
+                                        disabled=not conf_del_vis,
+                                        use_container_width=True,
+                                        key=f"btn_del_vis_{v_id}",
+                                    ):
+                                        try:
+                                            eliminar_visita(supabase, v_id)
+                                            if (
+                                                st.session_state.get("paciente_actual")
+                                                and st.session_state[
+                                                    "paciente_actual"
+                                                ].get("id")
+                                                == pac_sel_id
+                                            ):
+                                                st.session_state[
+                                                    "visitas_paciente"
+                                                ] = obtener_visitas_paciente(
+                                                    supabase, pac_sel_id
+                                                )
+                                            st.success(
+                                                "✅ Visita eliminada correctamente (el paciente se mantiene)."
+                                            )
+                                            st.rerun()
+                                        except Exception as exc:
+                                            st.error(
+                                                f"Error al eliminar la visita: {exc}"
+                                            )
+
+                        if ana_pac_sel:
+                            st.markdown("---")
+                            st.markdown("##### 🧪 Analíticas registradas de este paciente")
+                            filas_ana_dir = [
+                                {
+                                    "Fecha": str(a.get("fecha_analitica") or "")[:10],
+                                    "Hb": a.get("hb"),
+                                    "ProBNP": a.get("probnp"),
+                                    "Cr": a.get("cr"),
+                                    "FGE": a.get("fge_texto") or a.get("fge"),
+                                    "K": a.get("k"),
+                                    "Na": a.get("na"),
+                                }
+                                for a in ana_pac_sel
+                            ]
+                            ev_ana = st.dataframe(
+                                pd.DataFrame(filas_ana_dir),
+                                use_container_width=True,
+                                hide_index=True,
+                                on_select="rerun",
+                                selection_mode="single-row",
+                                key=f"tabla_ana_pac_{pac_sel_id}",
+                            )
+                            ana_rows_sel = (
+                                ev_ana.selection.rows
+                                if (ev_ana and hasattr(ev_ana, "selection"))
+                                else []
+                            )
+                            if not ana_rows_sel or ana_rows_sel[0] >= len(ana_pac_sel):
+                                st.caption(
+                                    "👆 Opcional: haga clic en una fila para eliminar solo una analítica concreta."
+                                )
+                            else:
+                                a_elegida = ana_pac_sel[ana_rows_sel[0]]
+                                a_id = a_elegida["id"]
+                                c_chk_a, c_btn_a = st.columns([2, 1.5])
+                                with c_chk_a:
+                                    conf_del_ana = st.checkbox(
+                                        f"Confirmo eliminar analítica del {str(a_elegida.get('fecha_analitica'))[:10]}",
+                                        key=f"chk_del_ana_{a_id}",
+                                    )
+                                with c_btn_a:
+                                    if st.button(
+                                        "🗑️ Eliminar Solo Esta Analítica",
+                                        type="primary",
+                                        disabled=not conf_del_ana,
+                                        use_container_width=True,
+                                        key=f"btn_del_ana_{a_id}",
+                                    ):
+                                        try:
+                                            eliminar_analitica(supabase, a_id)
+                                            if (
+                                                st.session_state.get("paciente_actual")
+                                                and st.session_state[
+                                                    "paciente_actual"
+                                                ].get("id")
+                                                == pac_sel_id
+                                            ):
+                                                st.session_state[
+                                                    "analiticas_paciente"
+                                                ] = obtener_analiticas_paciente(
+                                                    supabase, pac_sel_id
+                                                )
+                                            st.success(
+                                                "✅ Analítica eliminada correctamente."
+                                            )
+                                            st.rerun()
+                                        except Exception as exc:
+                                            st.error(
+                                                f"Error al eliminar la analítica: {exc}"
+                                            )
 
                     with sub_del:
                         st.warning(
